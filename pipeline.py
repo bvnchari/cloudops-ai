@@ -140,3 +140,56 @@ def run_pipeline(verbose: bool = True):
 
 if __name__ == "__main__":
     run_pipeline()
+
+
+def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = None):
+    """
+    LIVE mode — sources topology and alerts FROM ServiceNow instead of
+    synthetic telemetry, then runs the same correlation / remediation /
+    AI-analysis engines on that real data.
+
+    Honest scope: ServiceNow is a system of record, not a metrics store, so
+    the telemetry ingestion (Phase 1) and anomaly detection (Phase 3) stages
+    have no input in this mode and are skipped rather than faked. Everything
+    downstream — correlation, RCA, remediation matching, KPIs, AI briefs —
+    runs on real data.
+    """
+    from core.sn_source import ServiceNowDataSource
+    from core.ai_agent import AIIncidentAnalyst
+
+    log = print if verbose else (lambda *a, **k: None)
+    src = ServiceNowDataSource(connector)
+
+    topo = src.fetch_topology()
+    log(f"[LIVE] CMDB topology: {len(topo.cis)} CIs "
+        f"({sum(1 for c in topo.cis.values() if c.depends_on)} with dependencies)")
+
+    alerts, table = src.fetch_alerts()
+    log(f"[LIVE] Alerts pulled from `{table}`: {len(alerts)}")
+    if not alerts:
+        log("[LIVE] No open alerts/incidents found in the instance.")
+
+    engine = CorrelationEngine(topo)
+    incidents, stats = engine.process(alerts) if alerts else ([], {
+        "raw_alerts": 0, "deduped_events": 0, "incidents": 0,
+        "noise_reduction_pct": 0.0})
+    log(f"[LIVE] {stats['raw_alerts']} alerts -> {stats['incidents']} incidents "
+        f"({stats['noise_reduction_pct']}% noise reduction)")
+
+    rem = RemediationEngine()
+    for inc in incidents:
+        rem.remediate(inc)
+    log(f"[LIVE] Runbook matches: {len(rem.results)} "
+        f"| pending approval: {len(rem.pending_approval)}")
+
+    kpi = KPIEngine().compute(max(stats["raw_alerts"], 1), incidents)
+
+    analyst = AIIncidentAnalyst(topo, api_key=api_key)
+    briefs = analyst.analyze_all(incidents)
+
+    return {
+        "mode": "live", "series": {}, "raw_alerts": alerts, "signals": [],
+        "incidents": incidents, "stats": stats, "tickets": [],
+        "remediations": rem.results, "kpi": kpi, "topology": topo,
+        "briefs": briefs, "alert_source": table,
+    }

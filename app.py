@@ -27,8 +27,18 @@ def load():
 st.session_state.setdefault("sn_config", None)      # SNConfig once validated
 st.session_state.setdefault("sn_status", None)      # last connection test result
 st.session_state.setdefault("publish_result", None)
+st.session_state.setdefault("data_source", "demo")     # demo | live
+st.session_state.setdefault("anthropic_key", "")
+st.session_state.setdefault("live_result", None)
 
-result = load()
+if st.session_state.data_source == "live" and st.session_state.live_result:
+    result = st.session_state.live_result
+    st.info(f"**LIVE mode** — topology and alerts sourced from ServiceNow "
+            f"(`{result.get('alert_source', 'n/a')}`). Telemetry and anomaly "
+            f"detection are unavailable in this mode: ServiceNow is a system of "
+            f"record, not a metrics store.")
+else:
+    result = load()
 stats = result["stats"]
 incidents = result["incidents"]
 
@@ -93,6 +103,11 @@ with tab_inc:
 # ---------------- Telemetry ----------------
 with tab_metrics:
     st.subheader("Metric Explorer")
+    if not result.get("series"):
+        st.warning("No metric time-series in LIVE mode. ServiceNow stores events "
+                   "and CIs, not raw metrics — connect Prometheus/Datadog for this "
+                   "tab, or switch back to demo mode in ⚙️ Config.")
+        st.stop()
     keys = sorted(result["series"].keys())
     sel = st.selectbox("Series", [f"{ci} · {m}" for ci, m in keys])
     ci, metric = sel.split(" · ")
@@ -276,6 +291,98 @@ with tab_cfg:
         if st.button("Clear publish results"):
             st.session_state.publish_result = None
             st.rerun()
+
+    st.divider()
+    st.subheader("Data Source")
+    st.caption("**Demo**: synthetic telemetry drives all engines (all 7 tabs). "
+               "**Live**: topology and alerts are pulled FROM ServiceNow — "
+               "correlation, RCA, remediation, KPIs and AI briefs run on real "
+               "data, but metric charts and anomaly detection are unavailable "
+               "(ServiceNow holds no time-series).")
+
+    mode = st.radio("Source", ["demo", "live"],
+                    index=0 if st.session_state.data_source == "demo" else 1,
+                    format_func=lambda m: ("Synthetic demo (all tabs)" if m == "demo"
+                                           else "ServiceNow live (real CMDB + alerts)"),
+                    horizontal=True)
+
+    if mode == "live":
+        if not st.session_state.sn_config:
+            st.warning("Connect to ServiceNow above before switching to live mode.")
+        else:
+            cols = st.columns(2)
+            if cols[0].button("🔄 Pull data from ServiceNow", type="primary"):
+                from core.servicenow import EnterpriseServiceNowConnector
+                from pipeline import run_pipeline_live
+                with st.spinner("Pulling CMDB and alerts, running engines..."):
+                    try:
+                        conn = EnterpriseServiceNowConnector(st.session_state.sn_config)
+                        live = run_pipeline_live(
+                            conn, verbose=False,
+                            api_key=st.session_state.anthropic_key or None)
+                        st.session_state.live_result = live
+                        st.session_state.data_source = "live"
+                        if not live["incidents"]:
+                            st.warning(f"Pulled {len(live['topology'].cis)} CIs but "
+                                       f"found no open alerts/incidents to correlate. "
+                                       f"Publish some first, or create incidents in "
+                                       f"the instance.")
+                        else:
+                            st.success(f"Live: {len(live['topology'].cis)} CIs, "
+                                       f"{live['stats']['raw_alerts']} alerts -> "
+                                       f"{live['stats']['incidents']} incidents.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Pull failed: {e}")
+            if cols[1].button("Inspect instance inventory"):
+                from core.servicenow import EnterpriseServiceNowConnector
+                from core.sn_source import ServiceNowDataSource
+                try:
+                    inv = ServiceNowDataSource(
+                        EnterpriseServiceNowConnector(st.session_state.sn_config)
+                    ).inventory()
+                    st.json(inv)
+                except Exception as e:
+                    st.error(f"Inventory failed: {e}")
+    elif st.session_state.data_source != "demo":
+        st.session_state.data_source = "demo"
+        st.session_state.live_result = None
+        st.rerun()
+
+    st.divider()
+    st.subheader("AI Incident Analyst (Phase 7)")
+    briefs_now = result.get("briefs", [])
+    backend_now = briefs_now[0].backend if briefs_now else "n/a"
+    st.caption(f"Current narrative backend: **{backend_now}**. Without a key, "
+               "briefs are generated deterministically from incident structure "
+               "(no hallucination risk). With a key, Claude writes the executive "
+               "summary and RCA narrative, still grounded in the same structured "
+               "data.")
+    key_in = st.text_input("Anthropic API key (optional)", type="password",
+                           value=st.session_state.anthropic_key,
+                           placeholder="sk-ant-...",
+                           help="Session-scoped only — never stored or committed.")
+    kc1, kc2 = st.columns(2)
+    if kc1.button("Enable LLM narratives"):
+        if not key_in.strip():
+            st.error("Enter a key first.")
+        else:
+            from core.ai_agent import AIIncidentAnalyst
+            with st.spinner("Testing key and regenerating briefs..."):
+                analyst = AIIncidentAnalyst(result["topology"],
+                                            api_key=key_in.strip())
+                new_briefs = analyst.analyze_all(result["incidents"])
+                if new_briefs and new_briefs[0].backend == "llm":
+                    st.session_state.anthropic_key = key_in.strip()
+                    result["briefs"] = new_briefs
+                    st.success("LLM narratives enabled — see the 🤖 AI Analyst tab.")
+                else:
+                    st.error(f"Key rejected or API unreachable: "
+                             f"{analyst.last_error or 'unknown error'}. "
+                             f"Falling back to deterministic briefs.")
+    if kc2.button("Disable / clear key"):
+        st.session_state.anthropic_key = ""
+        st.rerun()
 
     st.divider()
     with st.expander("🔒 How credentials are handled"):

@@ -33,10 +33,14 @@ class IncidentBrief:
 
 
 class AIIncidentAnalyst:
-    def __init__(self, topology: TopologyMap, use_llm: bool | None = None):
+    def __init__(self, topology: TopologyMap, use_llm: bool | None = None,
+                 api_key: str | None = None, model: str | None = None):
         self.topology = topology
-        self.use_llm = (use_llm if use_llm is not None
-                        else bool(os.environ.get("ANTHROPIC_API_KEY")))
+        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        self.model = model or os.environ.get("ANTHROPIC_MODEL",
+                                             "claude-haiku-4-5-20251001")
+        self.use_llm = use_llm if use_llm is not None else bool(self.api_key)
+        self.last_error: str | None = None
 
     # ---------------- node 1: gather ----------------
     def _gather_context(self, inc: Incident) -> dict:
@@ -85,8 +89,8 @@ class AIIncidentAnalyst:
         if self.use_llm:
             try:
                 return self._llm_brief(ctx)
-            except Exception:
-                pass                      # graceful degradation to template
+            except Exception as e:        # graceful degradation to template
+                self.last_error = str(e)[:200]
         return self._template_brief(ctx)
 
     def analyze_all(self, incidents: list[Incident]) -> list[IncidentBrief]:
@@ -108,10 +112,10 @@ class AIIncidentAnalyst:
         )
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
+            headers={"x-api-key": self.api_key,
                      "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
-            json={"model": os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+            json={"model": self.model,
                   "max_tokens": 700,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=30)

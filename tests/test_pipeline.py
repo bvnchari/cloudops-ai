@@ -196,3 +196,91 @@ def test_publisher_progress_callback():
                       topology=result["topology"],
                       progress_cb=lambda d, t, l: seen.append((d, t)))
     assert seen and seen[-1][0] == seen[-1][1]        # progress reaches 100%
+
+
+class _FakeSN:
+    """Simulates ServiceNow REST responses for inbound-source testing."""
+    def __init__(self, with_alerts=True, em=True):
+        self.with_alerts, self.em = with_alerts, em
+    def _request(self, method, path, **kw):
+        if "cmdb_ci_server" in path:
+            return {"result": [
+                {"sys_id": "s1", "name": "prod-node-01", "short_description": "Payments"},
+                {"sys_id": "s2", "name": "prod-node-02", "short_description": "Payments"}]}
+        if "cmdb_ci_service" in path:
+            return {"result": [
+                {"sys_id": "s3", "name": "payments-api", "short_description": "Payments"}]}
+        if "cmdb_rel_ci" in path:
+            return {"result": [{"parent": "s1", "child": "s3"}]}
+        if "em_alert" in path:
+            if not (self.em and self.with_alerts):
+                raise RuntimeError("Event Management not installed")
+            return {"result": [
+                {"number": "EM0001", "node": "prod-node-01", "type": "CPU",
+                 "severity": "1", "description": "CPU critical",
+                 "metric_name": "cpu_util", "sys_created_on": "2026-07-24 10:00:00",
+                 "source": "CloudOps-AI"},
+                {"number": "EM0002", "node": "payments-api", "type": "Latency",
+                 "severity": "2", "description": "latency high",
+                 "metric_name": "api_latency", "sys_created_on": "2026-07-24 10:02:00",
+                 "source": "CloudOps-AI"}]}
+        if "incident" in path:
+            if not self.with_alerts:
+                return {"result": []}
+            return {"result": [
+                {"number": "INC0012345", "short_description": "DB slow",
+                 "priority": "1", "cmdb_ci": {"display_value": "prod-node-01"},
+                 "category": "database", "opened_at": "2026-07-24 09:00:00"}]}
+        return {"result": []}
+
+
+def test_sn_source_builds_topology_from_cmdb():
+    from core.sn_source import ServiceNowDataSource
+    topo = ServiceNowDataSource(_FakeSN()).fetch_topology()
+    assert "prod-node-01" in topo.cis and "payments-api" in topo.cis
+    assert topo.cis["prod-node-01"].ci_type == "node"
+    assert topo.cis["payments-api"].layer == "application"
+    # relationship: child depends on parent
+    assert "prod-node-01" in topo.cis["payments-api"].depends_on
+    assert "payments-api" in topo.downstream_of("prod-node-01")
+
+
+def test_sn_source_alerts_prefers_em_then_falls_back():
+    from core.sn_source import ServiceNowDataSource
+    alerts, table = ServiceNowDataSource(_FakeSN(em=True)).fetch_alerts()
+    assert table == "em_alert" and len(alerts) == 2
+    assert alerts[0].severity == "critical" and alerts[0].ci_id == "prod-node-01"
+    assert alerts[0].ts > 0
+    # instance without Event Management -> incident table fallback
+    alerts2, table2 = ServiceNowDataSource(_FakeSN(em=False)).fetch_alerts()
+    assert table2 == "incident" and alerts2[0].alert_id == "INC0012345"
+
+
+def test_live_pipeline_end_to_end_on_servicenow_data():
+    from pipeline import run_pipeline_live
+    res = run_pipeline_live(_FakeSN(), verbose=False)
+    assert res["mode"] == "live"
+    assert res["series"] == {} and res["signals"] == []   # honestly empty, not faked
+    assert len(res["topology"].cis) == 3
+    assert res["stats"]["raw_alerts"] == 2
+    assert res["incidents"], "correlation should produce incidents from SN alerts"
+    inc = res["incidents"][0]
+    assert inc.probable_root_cause in res["topology"].cis
+    assert res["briefs"] and res["briefs"][0].backend == "template"
+
+
+def test_live_pipeline_handles_empty_instance():
+    from pipeline import run_pipeline_live
+    res = run_pipeline_live(_FakeSN(with_alerts=False, em=False), verbose=False)
+    assert res["stats"]["raw_alerts"] == 0 and res["incidents"] == []
+    assert res["briefs"] == []
+
+
+def test_ai_analyst_accepts_explicit_key_and_degrades():
+    from core.ai_agent import AIIncidentAnalyst
+    result = run_pipeline(verbose=False)
+    # bad key -> must fall back to template, record error, never crash
+    a = AIIncidentAnalyst(result["topology"], api_key="sk-ant-invalid")
+    briefs = a.analyze_all(result["incidents"][:1])
+    assert briefs[0].backend == "template"
+    assert a.last_error
