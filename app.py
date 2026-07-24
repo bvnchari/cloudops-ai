@@ -66,9 +66,10 @@ st.caption(f"MTTR source: {kpi_source}")
 
 st.divider()
 
-tab_funnel, tab_inc, tab_metrics, tab_rem, tab_itsm, tab_ai, tab_cfg = st.tabs(
-    ["📉 Alert Funnel", "🚨 Incidents", "📈 Telemetry", "🔧 Remediation",
-     "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
+(tab_oncall, tab_exec, tab_funnel, tab_inc, tab_metrics, tab_rem,
+ tab_itsm, tab_ai, tab_cfg) = st.tabs(
+    ["🎯 On-Call", "📊 Executive", "📉 Alert Funnel", "🚨 Incidents",
+     "📈 Telemetry", "🔧 Remediation", "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -400,3 +401,162 @@ with tab_cfg:
             "instance — this app ships with no credentials baked in.\n"
             "- Publishing writes **real tickets** to the instance you configure. "
             "Point it at a developer/test instance, not production.")
+
+# ---------------- On-Call (day-to-day engineer view) ----------------
+with tab_oncall:
+    from core.insights import (TriageQueue, noise_hotspots, automation_gaps)
+    from core.reports import postmortem_markdown
+
+    st.subheader("Triage Queue")
+    st.caption("Priority = severity × blast radius × business impact × age. "
+               "Auto-remediated incidents are demoted to informational.")
+
+    queue = TriageQueue(result["topology"]).build(incidents)
+    open_items = [q for q in queue if q.needs_human]
+
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Needs attention", len(open_items))
+    q2.metric("Auto-handled", len(queue) - len(open_items))
+    q3.metric("Highest priority", f"{queue[0].score:g}" if queue else "—")
+
+    show_all = st.checkbox("Show auto-remediated incidents too", value=True)
+    briefs_by_id = {b.incident_id: b for b in result.get("briefs", [])}
+    rem_by_id = {r.incident_id: r for r in result.get("remediations", [])}
+
+    for item in queue:
+        if not show_all and not item.needs_human:
+            continue
+        inc = item.incident
+        icon = {"critical": "🔴", "warning": "🟠"}.get(inc.severity, "🔵")
+        state = "✅ auto-resolved" if inc.status == "resolved" else f"⚠️ {inc.status}"
+        with st.expander(f"**#{item.rank}** {icon} `{inc.incident_id}` · "
+                         f"score {item.score:g} · {state} · {inc.title}"):
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Root cause CI", inc.probable_root_cause or "—")
+            c2.metric("Blast radius", f"{item.blast_radius} CI(s)")
+            c3.metric("Age", f"{item.age_minutes:.0f} min")
+
+            st.markdown("**Why this priority:**")
+            for reason in item.reasons:
+                st.markdown(f"- {reason}")
+
+            st.markdown(f"**Alerts folded in:** {inc.raw_alert_count} · "
+                        f"**Remediation:** {inc.remediation or 'none matched'}")
+
+            pm = postmortem_markdown(inc, brief=briefs_by_id.get(inc.incident_id),
+                                     remediation=rem_by_id.get(inc.incident_id),
+                                     topology=result["topology"])
+            st.download_button("📄 Download postmortem", pm,
+                               file_name=f"postmortem_{inc.incident_id}.md",
+                               mime="text/markdown", key=f"pm_{inc.incident_id}")
+
+    st.divider()
+    st.subheader("Alert Tuning — Noise Hotspots")
+    st.caption("The CI/metric pairs generating the most volume. Tuning these "
+               "gives the biggest reduction in on-call noise.")
+    hotspots = noise_hotspots(result["raw_alerts"])
+    if hotspots:
+        st.dataframe(pd.DataFrame([{
+            "CI": h.ci_id, "Metric": h.metric, "Alerts": h.alert_count,
+            "% of volume": h.pct_of_total,
+            "Critical": h.severity_mix.get("critical", 0),
+            "Warning": h.severity_mix.get("warning", 0),
+            "Recommendation": h.recommendation,
+        } for h in hotspots]), use_container_width=True, hide_index=True)
+    else:
+        st.info("No alerts in the current window.")
+
+    st.divider()
+    st.subheader("Automation Backlog — Runbook Coverage Gaps")
+    gaps = automation_gaps(incidents)
+    if gaps:
+        total_toil = sum(g.est_annual_toil_hours for g in gaps)
+        st.warning(f"{len(gaps)} incident pattern(s) had no matching runbook — "
+                   f"an estimated **{total_toil:.0f} hours/year** of manual toil.")
+        st.dataframe(pd.DataFrame([{
+            "Incident": g.incident_id, "Metrics": ", ".join(g.metrics),
+            "Severity": g.severity, "Root cause": g.root_cause,
+            "Suggested runbook": g.suggested_runbook,
+            "Est. annual toil (h)": g.est_annual_toil_hours,
+        } for g in gaps]), use_container_width=True, hide_index=True)
+    else:
+        st.success("Full runbook coverage — every incident matched an "
+                   "auto-remediation path.")
+
+# ---------------- Executive (management view) ----------------
+with tab_exec:
+    from core.slo import SLOEngine, DEFAULT_SLOS, SLO
+    from core.insights import service_scorecard, automation_gaps, noise_hotspots
+    from core.reports import exec_report_markdown
+
+    st.subheader("Error Budget Status")
+    st.caption("Burn rate 1.0 = exactly on pace to exhaust the budget by window "
+               "end. Thresholds follow the Google SRE multi-window model "
+               "(14.4× page, 6× ticket).")
+
+    with st.expander("Adjust SLO targets"):
+        target = st.slider("Availability target (%)", 99.0, 99.99, 99.9, 0.01)
+        window_days = st.selectbox("Window (days)", [7, 30, 90], index=1)
+        custom_slos = [SLO(name=s.name, business_service=s.business_service,
+                           target_pct=target, window_days=window_days,
+                           severity_counts=s.severity_counts)
+                       for s in DEFAULT_SLOS]
+
+    statuses = SLOEngine(custom_slos).evaluate(incidents)
+    for s in statuses:
+        color = {"HEALTHY": "🟢", "AT RISK": "🟡", "SLOW BURN": "🟠",
+                 "FAST BURN": "🔴", "EXHAUSTED": "⛔"}[s.status]
+        with st.container(border=True):
+            st.markdown(f"### {color} {s.slo.name} — {s.status}")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Target", f"{s.slo.target_pct}%")
+            m2.metric("Achieved", f"{s.achieved_pct}%")
+            m3.metric("Budget used", f"{s.consumed_pct}%")
+            m4.metric("Burn rate", f"{s.burn_rate}×")
+            st.progress(min(s.consumed_pct / 100, 1.0),
+                        text=f"{s.remaining_minutes:.0f} of "
+                             f"{s.budget_minutes:.0f} budget minutes remaining")
+            st.info(f"**Recommended action:** {s.action}")
+            if s.contributing_incidents:
+                st.caption("Contributing incidents: " + ", ".join(
+                    f"{i} ({m}m)" for i, m in s.contributing_incidents))
+
+    st.divider()
+    st.subheader("Service Health Scorecard")
+    scorecard = service_scorecard(incidents)
+    st.dataframe(pd.DataFrame([{
+        "Service": s.business_service, "Grade": s.grade, "Score": s.health_score,
+        "Incidents": s.incidents, "Critical": s.critical,
+        "Auto-resolved": s.auto_resolved, "Open": s.open_items,
+    } for s in scorecard]), use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("ROI Model")
+    st.caption("Adjust the assumptions — savings recalculate live. Defaults are "
+               "conservative; state your own assumptions when presenting.")
+    r1, r2, r3 = st.columns(3)
+    manual_mttr = r1.number_input("Manual MTTR (min)", 10, 240, 45, 5)
+    hourly_cost = r2.number_input("Engineer cost ($/hr)", 20, 300, 60, 5)
+    annual_incidents = r3.number_input("Incidents/year", 100, 20000, 2400, 100)
+
+    from core.kpi import KPIEngine as _KE
+    roi = _KE(manual_mttr_min=manual_mttr, engineer_cost_per_hr=hourly_cost,
+              incidents_per_year_estimate=annual_incidents).compute(
+                  stats["raw_alerts"], incidents)
+    v1, v2, v3 = st.columns(3)
+    v1.metric("Automation rate", f"{roi.automation_rate_pct}%")
+    v2.metric("Est. annual savings", f"${roi.est_automation_savings_usd:,.0f}")
+    v3.metric("Toil hours avoided/yr",
+              f"{roi.est_automation_savings_usd / max(hourly_cost, 1):,.0f}")
+
+    st.divider()
+    st.subheader("Export")
+    report_md = exec_report_markdown(
+        kpi, stats, statuses, scorecard, automation_gaps(incidents),
+        noise_hotspots(result["raw_alerts"]),
+        period_label=("live ServiceNow data" if result.get("mode") == "live"
+                      else "demo analysis window"))
+    st.download_button("📊 Download reliability briefing (Markdown)", report_md,
+                       file_name="reliability_briefing.md", mime="text/markdown")
+    with st.expander("Preview"):
+        st.markdown(report_md)

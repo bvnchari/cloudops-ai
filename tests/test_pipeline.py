@@ -284,3 +284,125 @@ def test_ai_analyst_accepts_explicit_key_and_degrades():
     briefs = a.analyze_all(result["incidents"][:1])
     assert briefs[0].backend == "template"
     assert a.last_error
+
+
+def test_slo_error_budget_math():
+    from core.slo import SLO, SLOEngine, SLOStatus
+    slo = SLO(name="test", business_service="Payments Platform",
+              target_pct=99.9, window_days=30)
+    # 30d at 99.9% => 43.2 minutes of budget
+    assert abs(slo.budget_minutes - 43.2) < 0.01
+
+    # consuming exactly the budget share for the observed window => burn rate 1.0
+    window_h = 2.0
+    share = slo.budget_minutes * (window_h * 60) / (30 * 24 * 60)
+    s = SLOStatus(slo=slo, consumed_minutes=share, observed_window_h=window_h)
+    assert abs(s.burn_rate - 1.0) < 0.01
+    assert s.status == "AT RISK"
+
+    # 20x that pace => fast burn => page
+    s2 = SLOStatus(slo=slo, consumed_minutes=share * 20, observed_window_h=window_h)
+    assert s2.burn_rate > 14.4 and s2.status == "FAST BURN"
+    assert "Page" in s2.action
+
+    # zero consumption => healthy, full budget remaining
+    s3 = SLOStatus(slo=slo, consumed_minutes=0.0, observed_window_h=window_h)
+    assert s3.status == "HEALTHY" and s3.remaining_minutes == slo.budget_minutes
+    assert s3.achieved_pct == 100.0
+
+    # exhausted budget clamps remaining at zero
+    s4 = SLOStatus(slo=slo, consumed_minutes=slo.budget_minutes * 3,
+                   observed_window_h=window_h)
+    assert s4.remaining_minutes == 0.0 and s4.status == "EXHAUSTED"
+
+
+def test_slo_engine_only_counts_matching_service_and_severity():
+    from core.slo import SLO, SLOEngine
+    result = run_pipeline(verbose=False)
+    crit_only = SLO(name="c", business_service="Payments Platform",
+                    target_pct=99.9, severity_counts=("critical",))
+    both = SLO(name="b", business_service="Payments Platform",
+               target_pct=99.9, severity_counts=("critical", "warning"))
+    other = SLO(name="o", business_service="Nonexistent Service", target_pct=99.9)
+    s_crit, s_both, s_other = SLOEngine([crit_only, both, other]).evaluate(
+        result["incidents"])
+    assert s_both.consumed_minutes >= s_crit.consumed_minutes
+    assert s_other.consumed_minutes == 0.0 and s_other.status == "HEALTHY"
+
+
+def test_triage_queue_ranking_is_explainable():
+    from core.insights import TriageQueue
+    result = run_pipeline(verbose=False)
+    queue = TriageQueue(result["topology"]).build(result["incidents"])
+    assert len(queue) == len(result["incidents"])
+    # sorted descending, ranks sequential, every score carries reasoning
+    scores = [q.score for q in queue]
+    assert scores == sorted(scores, reverse=True)
+    assert [q.rank for q in queue] == list(range(1, len(queue) + 1))
+    assert all(q.reasons for q in queue)
+    # auto-resolved incidents must be demoted below an equivalent open one
+    import copy
+    inc = copy.deepcopy(result["incidents"][0])
+    inc.status, inc.resolved_ts = "open", None
+    open_q = TriageQueue(result["topology"]).build([inc])[0]
+    resolved_q = next(q for q in queue
+                      if q.incident.incident_id == inc.incident_id)
+    assert open_q.score > resolved_q.score
+
+
+def test_noise_hotspots_and_automation_gaps():
+    from core.insights import noise_hotspots, automation_gaps
+    from core.remediation import RemediationEngine, Runbook
+    result = run_pipeline(verbose=False)
+
+    hot = noise_hotspots(result["raw_alerts"], top_n=5)
+    assert hot and hot[0].alert_count >= hot[-1].alert_count      # ranked
+    assert sum(h.alert_count for h in hot) <= len(result["raw_alerts"])
+    assert all(h.recommendation for h in hot)
+
+    # with default runbooks everything matches -> no gaps
+    assert automation_gaps(result["incidents"]) == []
+    # with an empty runbook set, every incident becomes a costed gap
+    empty = RemediationEngine(runbooks=[Runbook(
+        runbook_id="RB-X", name="none", match_metrics=[], match_severities=[])])
+    gaps = automation_gaps(result["incidents"], engine=empty)
+    assert len(gaps) == len(result["incidents"])
+    assert all(g.est_annual_toil_hours > 0 for g in gaps)
+
+
+def test_service_scorecard_grades():
+    from core.insights import service_scorecard
+    result = run_pipeline(verbose=False)
+    cards = service_scorecard(result["incidents"])
+    assert cards
+    for c in cards:
+        assert 0 <= c.health_score <= 100
+        assert c.grade in "ABCDF"
+        assert c.incidents == c.auto_resolved + c.open_items
+
+
+def test_report_generators_produce_valid_markdown():
+    from core.reports import postmortem_markdown, exec_report_markdown
+    from core.slo import SLOEngine
+    from core.insights import service_scorecard, automation_gaps, noise_hotspots
+    result = run_pipeline(verbose=False)
+    inc = result["incidents"][0]
+    brief = next(b for b in result["briefs"] if b.incident_id == inc.incident_id)
+
+    pm = postmortem_markdown(inc, brief=brief, topology=result["topology"])
+    assert pm.startswith(f"# Postmortem — {inc.incident_id}")
+    for section in ("## Impact", "## Root cause", "## Timeline",
+                    "## Response", "## Follow-up actions"):
+        assert section in pm
+    assert (inc.probable_root_cause or "") in pm
+    assert "blameless" in pm.lower()
+
+    rep = exec_report_markdown(
+        result["kpi"], result["stats"],
+        SLOEngine().evaluate(result["incidents"]),
+        service_scorecard(result["incidents"]),
+        automation_gaps(result["incidents"]),
+        noise_hotspots(result["raw_alerts"]))
+    assert rep.startswith("# Reliability Briefing")
+    assert "## Error budget status" in rep and "## Service health scorecard" in rep
+    assert str(result["stats"]["incidents"]) in rep
