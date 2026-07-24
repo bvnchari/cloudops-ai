@@ -30,6 +30,7 @@ st.session_state.setdefault("publish_result", None)
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
+st.session_state.setdefault("report_subscriptions", {})   # name -> ReportSubscription
 
 if st.session_state.data_source == "live" and st.session_state.live_result:
     result = st.session_state.live_result
@@ -66,11 +67,11 @@ st.caption(f"MTTR source: {kpi_source}")
 
 st.divider()
 
-(tab_oncall, tab_exec, tab_slx, tab_funnel, tab_inc, tab_metrics, tab_rem,
- tab_itsm, tab_ai, tab_cfg) = st.tabs(
-    ["🎯 On-Call", "📊 Executive", "🎚️ SLI/SLO/SLA", "📉 Alert Funnel",
-     "🚨 Incidents", "📈 Telemetry", "🔧 Remediation", "🎫 ITSM",
-     "🤖 AI Analyst", "⚙️ Config"])
+(tab_oncall, tab_exec, tab_slx, tab_reports, tab_funnel, tab_inc, tab_metrics,
+ tab_rem, tab_itsm, tab_ai, tab_cfg) = st.tabs(
+    ["🎯 On-Call", "📊 Executive", "🎚️ SLI/SLO/SLA", "📤 Reports & Delivery",
+     "📉 Alert Funnel", "🚨 Incidents", "📈 Telemetry", "🔧 Remediation",
+     "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -718,3 +719,147 @@ with tab_slx:
             "The ordering matters: **SLI ≥ SLO target > SLA commitment**. If the "
             "SLO isn't tighter than the SLA, the first warning you get is a "
             "customer invoice credit.")
+
+# ---------------- Reports & Delivery ----------------
+with tab_reports:
+    from core.export import export_excel, export_pdf
+    from core.insights import automation_gaps, noise_hotspots, service_scorecard
+    from core.report_periods import build_bundle, build_period
+    from core.scheduler import ReportSubscription, SMTPConfig, send_report_email
+    from core.sla import SLA, SLAEngine
+    from core.sli import DEFAULT_SLIS, SLICalculator
+    from core.slo import SLO, SLOEngine
+
+    st.subheader("📤 Reports & Delivery")
+    st.caption("Generate a management-ready PDF or Excel report for any period, "
+               "or configure a standing email subscription.")
+
+    def _build_current_bundle(period_type: str, custom_days: int | None = None):
+        """Builds a ReportBundle from whatever data is currently loaded (`result`)."""
+        period = build_period(period_type, custom_days=custom_days)
+        calc = SLICalculator()
+        sli_results = []
+        for d in DEFAULT_SLIS:
+            if d.metric and (d.ci_id, d.metric) in result.get("series", {}):
+                sli_results.append(calc.from_series(d, result["series"][(d.ci_id, d.metric)]))
+            elif not d.metric:
+                sli_results.append(calc.from_incidents(
+                    d, incidents, window_h=2.0, business_service="Payments Platform"))
+
+        availability_sli = next((r for r in sli_results if r.source == "incident_timeline"),
+                                sli_results[0] if sli_results else None)
+        slo_statuses, sla_statuses = [], []
+        if availability_sli:
+            slo = SLO(name="Payments availability", business_service="Payments Platform",
+                      target_pct=99.9, window_days=period.days or 1)
+            slo_statuses = [SLOEngine().evaluate_from_sli(slo, availability_sli)]
+            sla = SLA(name="Payments Platform — Enterprise tier", customer="Enterprise customers",
+                      business_service="Payments Platform", commitment_pct=99.5)
+            sla_statuses = SLAEngine([sla]).evaluate(availability_sli, linked_slo_target=99.9)
+
+        scorecard = service_scorecard(incidents)
+        gaps = automation_gaps(incidents)
+        hotspots = noise_hotspots(result.get("raw_alerts", []))
+        return build_bundle(period=period, kpi=kpi, stats=stats,
+                            slo_statuses=slo_statuses, sla_statuses=sla_statuses,
+                            sli_results=sli_results, scorecard=scorecard,
+                            gaps=gaps, hotspots=hotspots)
+
+    st.markdown("### 1️⃣ Generate a report")
+    c1, c2 = st.columns(2)
+    period_choice = c1.selectbox(
+        "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
+        index=1, key="rep_period_choice")
+    custom_days = None
+    if period_choice == "custom":
+        custom_days = c2.number_input("Custom period (days)", 1, 365, 14, key="rep_custom_days")
+    else:
+        _std_days = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90}[period_choice]
+        c2.caption(f"Standard window: **{_std_days} days**")
+
+    if st.button("🔄 Build report bundle", key="rep_build_btn"):
+        st.session_state["rep_bundle"] = _build_current_bundle(period_choice, custom_days)
+
+    bundle = st.session_state.get("rep_bundle")
+    if bundle:
+        st.success(f"Bundle ready — {bundle.period.label} ({bundle.period.range_str})")
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            if st.button("📄 Generate PDF", key="rep_gen_pdf"):
+                pdf_path = export_pdf(bundle, "/tmp/cloudops_report.pdf")
+                with open(pdf_path, "rb") as f:
+                    st.download_button("⬇️ Download PDF", f, file_name="CloudOps-AI_Report.pdf",
+                                       mime="application/pdf", key="rep_dl_pdf")
+        with dl2:
+            if st.button("📊 Generate Excel", key="rep_gen_xlsx"):
+                xlsx_path = export_excel(bundle, "/tmp/cloudops_report.xlsx")
+                with open(xlsx_path, "rb") as f:
+                    st.download_button("⬇️ Download Excel", f,
+                                       file_name="CloudOps-AI_Report.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                       key="rep_dl_xlsx")
+    else:
+        st.info("Click **Build report bundle** to compute KPIs/SLO/SLA/scorecard "
+                "for the selected period, then export.")
+
+    st.divider()
+
+    st.markdown("### 2️⃣ Configure automated email delivery")
+    st.caption("Requires SMTP credentials as environment variables/secrets: "
+               "`SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` (optionally `SMTP_PORT`, "
+               "`SMTP_FROM`). A standing subscription re-sends on the cadence "
+               "below for as long as this app process keeps running — for "
+               "guaranteed enterprise delivery, point a cron worker or "
+               "EventBridge Scheduler at `send_report_email()` directly "
+               "(see `core/scheduler.py` docstring).")
+
+    with st.form("rep_sub_form"):
+        f1, f2, f3 = st.columns(3)
+        sub_name = f1.text_input("Subscription name", placeholder="e.g. cfo-weekly")
+        sub_recipients = f2.text_input("Recipients (comma-separated)",
+                                       placeholder="cfo@company.com, vp-eng@company.com")
+        sub_period = f3.selectbox("Cadence", ["daily", "weekly", "monthly", "quarterly"],
+                                  index=1, key="rep_sub_period")
+        sub_formats = st.multiselect("Formats", ["pdf", "excel"], default=["pdf"],
+                                     key="rep_sub_formats")
+        submitted = st.form_submit_button("➕ Add subscription")
+        if submitted:
+            if not sub_name or not sub_recipients:
+                st.error("Subscription name and at least one recipient are required.")
+            else:
+                recipients = [r.strip() for r in sub_recipients.split(",") if r.strip()]
+                st.session_state["report_subscriptions"][sub_name] = ReportSubscription(
+                    name=sub_name, recipients=recipients, period_type=sub_period,
+                    formats=tuple(sub_formats) or ("pdf",))
+                st.success(f"Subscription **{sub_name}** added ({sub_period}, "
+                          f"{'/'.join(sub_formats) or 'pdf'}).")
+
+    subs = st.session_state["report_subscriptions"]
+    if subs:
+        st.markdown("**Active subscriptions**")
+        st.dataframe(pd.DataFrame([{
+            "Name": s.name, "Recipients": ", ".join(s.recipients),
+            "Cadence": s.period_type, "Formats": "/".join(s.formats),
+            "Active": s.active,
+        } for s in subs.values()]), use_container_width=True, hide_index=True)
+
+        pick = st.selectbox("Send a test email now for:", list(subs.keys()),
+                            key="rep_test_send_pick")
+        if st.button("✉️ Send test email now", key="rep_test_send_btn"):
+            try:
+                test_bundle = _build_current_bundle(subs[pick].period_type)
+                res = send_report_email(subs[pick], test_bundle)
+                st.success(f"Sent to {', '.join(res['recipients'])} "
+                          f"({'/'.join(res['formats_sent'])}).")
+            except RuntimeError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Send failed: {e}")
+
+        remove = st.selectbox("Remove subscription:", ["—"] + list(subs.keys()),
+                              key="rep_remove_pick")
+        if remove != "—" and st.button("🗑️ Remove", key="rep_remove_btn"):
+            del st.session_state["report_subscriptions"][remove]
+            st.rerun()
+    else:
+        st.caption("No subscriptions configured yet.")

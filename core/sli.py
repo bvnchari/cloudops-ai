@@ -147,4 +147,7 @@ DEFAULT_SLIS = [
                   unit="%", description="load balancer 5xx rate under 1%"),
     SLIDefinition(name="Platform uptime", kind="availability",
                   description="window free of critical incidents"),
+    SLIDefinition(name="Login success rate", kind="availability", ci_id="svc-auth",
+                  metric="login_success_rate", threshold=99.0, comparison="gte",
+                  unit="%", description="authentication success rate at or above 99%"),
 ]

@@ -40,6 +40,7 @@ def run_pipeline(verbose: bool = True):
         ("svc-api", "api_latency_p99"), ("svc-api", "api_error_rate"),
         ("alb-01", "alb_5xx_rate"), ("rds-01", "db_replication_lag"),
         ("rds-01", "db_connections"), ("pod-api-1", "pod_restart_count"),
+        ("svc-auth", "login_success_rate"),
     }
     all_series = {k: src.series(metric=k[1], ci_id=k[0], n_points=120) for k in collection}
     log(f"[Phase 1] Telemetry ingested: {len(all_series)} series x 120 points "

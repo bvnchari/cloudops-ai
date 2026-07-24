@@ -1,0 +1,174 @@
+"""
+Phase 8 — Export: PDF and Excel report generation for management.
+
+Takes a report_periods.ReportBundle and renders:
+  * export_pdf()   -> polished PDF via reportlab
+  * export_excel() -> multi-tab workbook via openpyxl
+
+Both are pure functions of the bundle: no scheduling, no email, no I/O beyond
+writing the one output file. Keeps this module easy to unit test and reuse
+from the scheduler (core/scheduler.py) or the Streamlit UI (app.py).
+"""
+
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
+                                TableStyle)
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+NAVY = colors.HexColor("#0B2545")
+ACCENT = colors.HexColor("#1B6FA8")
+LIGHT = colors.HexColor("#EEF3F8")
+
+
+def _kpi_rows(kpi) -> list[tuple]:
+    return list(kpi.to_dict().items())
+
+
+def _slo_rows(slo_statuses) -> list[tuple]:
+    rows = [("SLO", "Target", "Achieved", "Budget Used", "Burn Rate", "Status")]
+    for s in slo_statuses:
+        rows.append((s.slo.name, f"{s.slo.target_pct}%", f"{s.achieved_pct}%",
+                     f"{s.consumed_pct}%", f"{s.burn_rate}x", s.status))
+    return rows
+
+
+def _sla_rows(sla_statuses) -> list[tuple]:
+    rows = [("SLA", "Commitment", "Achieved", "Headroom (min)", "Credit Exposure", "Status")]
+    for s in sla_statuses:
+        rows.append((s.sla.name, f"{s.sla.commitment_pct}%", f"{s.achieved_pct}%",
+                     f"{s.headroom_minutes:.0f}", f"${s.financial_exposure:,.0f}",
+                     s.status))
+    return rows
+
+
+def _scorecard_rows(scorecard) -> list[tuple]:
+    rows = [("Service", "Grade", "Score", "Incidents", "Critical", "Auto-Resolved", "Open")]
+    for s in scorecard:
+        rows.append((s.business_service, s.grade, s.health_score, s.incidents,
+                     s.critical, s.auto_resolved, s.open_items))
+    return rows
+
+
+def _gap_rows(gaps) -> list[tuple]:
+    rows = [("Incident", "Metrics", "Severity", "Est. Annual Toil (h)")]
+    for g in gaps[:20]:
+        rows.append((g.incident_id, ", ".join(g.metrics), g.severity,
+                     g.est_annual_toil_hours))
+    return rows
+
+
+# ---------------------------------------------------------------- PDF ----
+
+def export_pdf(bundle, path: str, generated_for: str = "Management") -> str:
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle("TitleNavy", parent=styles["Title"],
+                                 textColor=NAVY, spaceAfter=2)
+    h2 = ParagraphStyle("H2", parent=styles["Heading2"], textColor=ACCENT,
+                        spaceBefore=14, spaceAfter=6)
+    body = styles["BodyText"]
+
+    doc = SimpleDocTemplate(path, pagesize=A4,
+                            topMargin=18 * mm, bottomMargin=16 * mm,
+                            leftMargin=16 * mm, rightMargin=16 * mm)
+    story = [
+        Paragraph("CloudOps-AI — Reliability Report", title_style),
+        Paragraph(f"{bundle.period.label} &middot; {bundle.period.range_str} "
+                 f"&middot; Prepared for: {generated_for}", body),
+        Spacer(1, 10),
+    ]
+
+    def add_table(heading: str, rows: list[tuple], empty_note: str = ""):
+        story.append(Paragraph(heading, h2))
+        if len(rows) <= 1:
+            story.append(Paragraph(empty_note or "No data available.", body))
+            return
+        t = Table(rows, hAlign="LEFT", repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, LIGHT]),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c9d6e8")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 8))
+
+    add_table("Headline KPIs", [("Metric", "Value")] + _kpi_rows(bundle.kpi))
+    add_table("Error Budget Status (SLO)", _slo_rows(bundle.slo_statuses),
+              "No SLOs evaluated for this period.")
+    add_table("Contractual Status (SLA)", _sla_rows(bundle.sla_statuses),
+              "No SLAs evaluated for this period.")
+    add_table("Service Health Scorecard", _scorecard_rows(bundle.scorecard),
+              "No per-service scorecard available.")
+    add_table("Automation Backlog", _gap_rows(bundle.gaps),
+              "Full runbook coverage — no gaps identified.")
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "Generated by CloudOps-AI. Figures reflect the current analysis "
+        "window; see the platform's SLI/SLO/SLA tab for measurement "
+        "methodology.", styles["Italic"]))
+
+    doc.build(story)
+    return path
+
+
+# -------------------------------------------------------------- Excel ----
+
+HEADER_FILL = PatternFill(start_color="0B2545", end_color="0B2545", fill_type="solid")
+HEADER_FONT = Font(color="FFFFFF", bold=True, name="Arial")
+BODY_FONT = Font(name="Arial", size=10)
+
+
+def _write_sheet(wb: Workbook, title: str, rows: list[tuple]):
+    ws = wb.create_sheet(title=title[:31])   # Excel sheet name limit
+    if not rows:
+        ws["A1"] = "No data available for this period."
+        ws["A1"].font = BODY_FONT
+        return
+    for r_idx, row in enumerate(rows, start=1):
+        for c_idx, val in enumerate(row, start=1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            if r_idx == 1:
+                cell.fill = HEADER_FILL
+                cell.font = HEADER_FONT
+                cell.alignment = Alignment(horizontal="center")
+            else:
+                cell.font = BODY_FONT
+    for c_idx, header in enumerate(rows[0], start=1):
+        max_len = max(len(str(header)),
+                     max((len(str(r[c_idx - 1])) for r in rows[1:]), default=0))
+        ws.column_dimensions[get_column_letter(c_idx)].width = min(max_len + 4, 45)
+    ws.freeze_panes = "A2"
+
+
+def export_excel(bundle, path: str) -> str:
+    wb = Workbook()
+    wb.remove(wb.active)   # drop default empty sheet
+
+    cover = wb.create_sheet("Summary")
+    cover["A1"] = "CloudOps-AI Reliability Report"
+    cover["A1"].font = Font(name="Arial", size=16, bold=True, color="0B2545")
+    cover["A2"] = bundle.period.label
+    cover["A3"] = bundle.period.range_str
+    cover["A2"].font = cover["A3"].font = BODY_FONT
+    cover.column_dimensions["A"].width = 40
+
+    _write_sheet(wb, "KPIs", [("Metric", "Value")] + _kpi_rows(bundle.kpi))
+    _write_sheet(wb, "SLO", _slo_rows(bundle.slo_statuses))
+    _write_sheet(wb, "SLA", _sla_rows(bundle.sla_statuses))
+    _write_sheet(wb, "Scorecard", _scorecard_rows(bundle.scorecard))
+    _write_sheet(wb, "Automation Backlog", _gap_rows(bundle.gaps))
+
+    wb.save(path)
+    return path
