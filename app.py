@@ -362,6 +362,9 @@ with tab_cfg:
                            value=st.session_state.anthropic_key,
                            placeholder="sk-ant-...",
                            help="Session-scoped only — never stored or committed.")
+    model_in = st.selectbox(
+        "Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
+        index=0, help="Haiku is fastest and cheapest for short briefs.")
     kc1, kc2 = st.columns(2)
     if kc1.button("Enable LLM narratives"):
         if not key_in.strip():
@@ -370,7 +373,8 @@ with tab_cfg:
             from core.ai_agent import AIIncidentAnalyst
             with st.spinner("Testing key and regenerating briefs..."):
                 analyst = AIIncidentAnalyst(result["topology"],
-                                            api_key=key_in.strip())
+                                            api_key=key_in.strip(),
+                                            model=model_in)
                 new_briefs = analyst.analyze_all(result["incidents"])
                 if new_briefs and new_briefs[0].backend == "llm":
                     st.session_state.anthropic_key = key_in.strip()

@@ -119,7 +119,15 @@ class AIIncidentAnalyst:
                   "max_tokens": 700,
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=30)
-        r.raise_for_status()
+        if not r.ok:
+            # surface the API's own explanation — a bare 400 tells us nothing
+            detail = ""
+            try:
+                err = r.json().get("error", {})
+                detail = f"{err.get('type', '')}: {err.get('message', '')}".strip(": ")
+            except Exception:
+                detail = r.text[:250]
+            raise RuntimeError(f"HTTP {r.status_code} — {detail}")
         text = "".join(b.get("text", "") for b in r.json()["content"])
         data = json.loads(text.replace("```json", "").replace("```", "").strip())
         return IncidentBrief(incident_id=ctx["incident_id"],
