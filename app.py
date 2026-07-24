@@ -66,10 +66,11 @@ st.caption(f"MTTR source: {kpi_source}")
 
 st.divider()
 
-(tab_oncall, tab_exec, tab_funnel, tab_inc, tab_metrics, tab_rem,
+(tab_oncall, tab_exec, tab_slx, tab_funnel, tab_inc, tab_metrics, tab_rem,
  tab_itsm, tab_ai, tab_cfg) = st.tabs(
-    ["🎯 On-Call", "📊 Executive", "📉 Alert Funnel", "🚨 Incidents",
-     "📈 Telemetry", "🔧 Remediation", "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
+    ["🎯 On-Call", "📊 Executive", "🎚️ SLI/SLO/SLA", "📉 Alert Funnel",
+     "🚨 Incidents", "📈 Telemetry", "🔧 Remediation", "🎫 ITSM",
+     "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -560,3 +561,160 @@ with tab_exec:
                        file_name="reliability_briefing.md", mime="text/markdown")
     with st.expander("Preview"):
         st.markdown(report_md)
+
+# ---------------- SLI / SLO / SLA chain ----------------
+with tab_slx:
+    from core.sli import SLICalculator, SLIDefinition, DEFAULT_SLIS
+    from core.slo import SLO, SLOEngine
+    from core.sla import SLA, SLAEngine, CreditTier
+
+    st.subheader("The Reliability Chain")
+    st.caption("**SLI** is what you measure · **SLO** is your internal target · "
+               "**SLA** is the external commitment with money attached. The gap "
+               "between SLO and SLA is your safety margin: you should breach the "
+               "objective long before the contract.")
+
+    calc = SLICalculator()
+
+    # ---- 1. SLI ----
+    st.markdown("### 1️⃣ SLI — Service Level Indicators (measured)")
+    sli_results = []
+    series_map = result.get("series", {})
+
+    for d in DEFAULT_SLIS:
+        if d.metric and (d.ci_id, d.metric) in series_map:
+            sli_results.append(calc.from_series(d, series_map[(d.ci_id, d.metric)]))
+        elif not d.metric:
+            sli_results.append(calc.from_incidents(
+                d, incidents, window_h=2.0,
+                business_service="Payments Platform"))
+
+    if not sli_results:
+        st.warning("No SLIs computable — metric series unavailable in this mode.")
+    else:
+        cols = st.columns(len(sli_results))
+        for col, r in zip(cols, sli_results):
+            col.metric(r.definition.name, f"{r.ratio_pct}%",
+                       delta=f"{r.bad_events} bad / {r.valid_events}",
+                       delta_color="inverse")
+        st.dataframe(pd.DataFrame([{
+            "SLI": r.definition.name, "Kind": r.definition.kind,
+            "Definition": r.headline, "Good": r.good_events,
+            "Valid": r.valid_events, "Ratio": f"{r.ratio_pct}%",
+            "Source": r.source,
+        } for r in sli_results]), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ---- 2. SLO ----
+    st.markdown("### 2️⃣ SLO — Service Level Objective (internal target)")
+    availability_sli = next((r for r in sli_results
+                             if r.source == "incident_timeline"), None) \
+        or (sli_results[0] if sli_results else None)
+
+    c1, c2 = st.columns(2)
+    slo_target = c1.slider("SLO target (%)", 99.0, 99.99, 99.9, 0.01,
+                           key="slx_slo_target")
+    slo_window = c2.selectbox("SLO window (days)", [7, 30, 90], index=1,
+                              key="slx_slo_window")
+
+    if availability_sli:
+        slo = SLO(name="Payments availability",
+                  business_service="Payments Platform",
+                  target_pct=slo_target, window_days=slo_window)
+        slo_status = SLOEngine().evaluate_from_sli(slo, availability_sli)
+        color = {"HEALTHY": "🟢", "AT RISK": "🟡", "SLOW BURN": "🟠",
+                 "FAST BURN": "🔴", "EXHAUSTED": "⛔"}[slo_status.status]
+        with st.container(border=True):
+            st.markdown(f"#### {color} {slo.name} — {slo_status.status}")
+            m = st.columns(4)
+            m[0].metric("Target", f"{slo.target_pct}%")
+            m[1].metric("Measured (SLI)", f"{availability_sli.ratio_pct}%")
+            m[2].metric("Budget used", f"{slo_status.consumed_pct}%")
+            m[3].metric("Burn rate", f"{slo_status.burn_rate}×")
+            st.progress(min(slo_status.consumed_pct / 100, 1.0),
+                        text=f"{slo_status.remaining_minutes:.0f} of "
+                             f"{slo_status.budget_minutes:.0f} error-budget "
+                             f"minutes remaining")
+            st.info(f"**Action:** {slo_status.action}")
+            st.caption(f"Backed by SLI: *{availability_sli.definition.name}* "
+                       f"({availability_sli.source})")
+
+    st.divider()
+
+    # ---- 3. SLA ----
+    st.markdown("### 3️⃣ SLA — Service Level Agreement (contractual)")
+    s1, s2, s3 = st.columns(3)
+    sla_commit = s1.slider("SLA commitment (%)", 95.0, 99.99, 99.5, 0.05,
+                           key="slx_sla_commit")
+    contract_value = s2.number_input("Monthly contract value ($)",
+                                     1000, 5_000_000, 50_000, 1000,
+                                     key="slx_contract")
+    excluded = s3.number_input("Excluded minutes (planned maintenance)",
+                               0, 10_000, 0, 10, key="slx_excluded")
+
+    if slo_target <= sla_commit:
+        st.error(f"⚠️ Your SLO target ({slo_target}%) is not tighter than the SLA "
+                 f"commitment ({sla_commit}%). The internal objective must be "
+                 f"stricter than the contract, or you get no early warning "
+                 f"before breaching it.")
+
+    if availability_sli:
+        sla = SLA(name="Payments Platform — Enterprise tier",
+                  customer="Enterprise customers",
+                  business_service="Payments Platform",
+                  commitment_pct=sla_commit,
+                  monthly_contract_value=float(contract_value),
+                  excluded_minutes=float(excluded))
+        sla_status = SLAEngine([sla]).evaluate(availability_sli,
+                                               linked_slo_target=slo_target)[0]
+        icon = {"MEETING": "🟢", "WATCH": "🟡", "AT RISK": "🟠",
+                "BREACHED": "🔴"}[sla_status.status]
+        with st.container(border=True):
+            st.markdown(f"#### {icon} {sla.name} — {sla_status.status}")
+            m = st.columns(4)
+            m[0].metric("Commitment", f"{sla.commitment_pct}%")
+            m[1].metric("Achieved", f"{sla_status.achieved_pct}%")
+            m[2].metric("Downtime headroom",
+                        f"{sla_status.headroom_minutes:.0f} min")
+            m[3].metric("Credit exposure",
+                        f"${sla_status.financial_exposure:,.0f}",
+                        delta=f"{sla_status.credit_pct:.0f}% credit"
+                        if sla_status.credit_pct else "no credit owed",
+                        delta_color="inverse")
+            if sla_status.breached:
+                st.error(f"**Action:** {sla_status.action}")
+            else:
+                st.success(f"**Action:** {sla_status.action}")
+
+            buffer = sla_status.slo_buffer_pct
+            if buffer is not None:
+                st.caption(f"Safety margin: SLO is **{buffer:.2f} percentage "
+                           f"points** tighter than the SLA — the buffer that "
+                           f"lets you react before the contract is at risk.")
+
+        st.markdown("**Service credit tiers**")
+        st.dataframe(pd.DataFrame([{
+            "If achieved falls below": f"{t.threshold_pct}%",
+            "Service credit": f"{t.credit_pct}%",
+            "Credit value": f"${sla.monthly_contract_value * t.credit_pct / 100:,.0f}",
+            "Tier": t.label,
+            "Currently applicable": "✅" if (sla_status.credit_tier and
+                                            sla_status.credit_tier.threshold_pct
+                                            == t.threshold_pct) else "",
+        } for t in sla.credit_tiers]), use_container_width=True, hide_index=True)
+
+    with st.expander("How these three relate"):
+        st.markdown(
+            "- **SLI** — a ratio of good events to valid events, computed from "
+            "telemetry (`p99 latency < 500ms`) or the incident timeline "
+            "(`minutes free of critical incidents`). It is a fact, not a goal.\n"
+            "- **SLO** — a target on that SLI (`99.9% over 30 days`). Breaching "
+            "it consumes error budget and triggers *engineering* decisions: "
+            "freeze releases, prioritise reliability work.\n"
+            "- **SLA** — a looser, contractual version of the same measurement, "
+            "with service credits attached. Breaching it triggers *commercial* "
+            "consequences.\n\n"
+            "The ordering matters: **SLI ≥ SLO target > SLA commitment**. If the "
+            "SLO isn't tighter than the SLA, the first warning you get is a "
+            "customer invoice credit.")

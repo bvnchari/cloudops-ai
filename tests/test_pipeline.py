@@ -406,3 +406,137 @@ def test_report_generators_produce_valid_markdown():
     assert rep.startswith("# Reliability Briefing")
     assert "## Error budget status" in rep and "## Service health scorecard" in rep
     assert str(result["stats"]["incidents"]) in rep
+
+
+def test_sli_event_based_from_metric_series():
+    from core.sli import SLICalculator, SLIDefinition
+    from core.telemetry import SyntheticSource
+    calc = SLICalculator()
+    d = SLIDefinition(name="lat", kind="latency", ci_id="svc-api",
+                      metric="api_latency_p99", threshold=500.0, comparison="lt")
+
+    # healthy series: baseline 180ms, everything under 500 -> ~100%
+    clean = SyntheticSource(seed=11).series("api_latency_p99", "svc-api", 120)
+    r_clean = calc.from_series(d, clean)
+    assert r_clean.valid_events == 120
+    assert r_clean.ratio_pct > 99.0
+    assert r_clean.good_events + r_clean.bad_events == r_clean.valid_events
+
+    # degraded second half -> ratio must drop materially
+    src = SyntheticSource(seed=11)
+    src.inject_incident("svc-api", "api_latency_p99", 60, 900, "step")
+    bad = src.series("api_latency_p99", "svc-api", 120)
+    r_bad = calc.from_series(d, bad)
+    assert r_bad.ratio_pct < 60.0
+    assert r_bad.bad_samples                      # captures offending values
+    assert "api_latency_p99" in r_bad.headline
+
+
+def test_sli_comparison_operators():
+    from core.sli import SLICalculator, SLIDefinition
+    from core.telemetry import MetricPoint
+    calc = SLICalculator()
+    pts = [MetricPoint(ts=i, metric="m", ci_id="c", value=float(i))
+           for i in range(10)]          # values 0..9
+    lt = calc.from_series(SLIDefinition("x", "custom", metric="m",
+                                        threshold=5.0, comparison="lt"), pts)
+    gte = calc.from_series(SLIDefinition("x", "custom", metric="m",
+                                         threshold=5.0, comparison="gte"), pts)
+    assert lt.good_events == 5 and gte.good_events == 5
+    assert lt.ratio_pct == 50.0
+
+
+def test_sli_time_based_no_double_counting_overlaps():
+    from core.sli import SLICalculator, SLIDefinition
+    from core.correlation import Incident
+    calc = SLICalculator()
+    d = SLIDefinition(name="uptime", kind="availability")
+    base = 100_000.0
+    # two overlapping 30-minute incidents inside a 2h window
+    a = Incident(incident_id="A", created_ts=base, severity="critical",
+                 title="a", resolved_ts=base + 1800, status="resolved")
+    b = Incident(incident_id="B", created_ts=base + 900, severity="critical",
+                 title="b", resolved_ts=base + 2700, status="resolved")
+    r = calc.from_incidents(d, [a, b], window_h=2.0)
+    bad_minutes = r.bad_events            # 1-minute buckets
+    # union is 45 min, not 60 — overlap must not be counted twice
+    assert 44 <= bad_minutes <= 47, bad_minutes
+    assert r.valid_events == 120
+
+    # no qualifying incidents -> perfect
+    clean = calc.from_incidents(d, [], window_h=2.0)
+    assert clean.ratio_pct == 100.0
+
+    # severity filter excludes warnings
+    w = Incident(incident_id="W", created_ts=base, severity="warning",
+                 title="w", resolved_ts=base + 3600, status="resolved")
+    assert calc.from_incidents(d, [w], window_h=2.0).ratio_pct == 100.0
+
+
+def test_slo_binds_to_sli_measurement():
+    from core.sli import SLICalculator, SLIDefinition
+    from core.slo import SLO, SLOEngine
+    from core.correlation import Incident
+    calc = SLICalculator()
+    base = 100_000.0
+    inc = Incident(incident_id="A", created_ts=base, severity="critical",
+                   title="a", resolved_ts=base + 600, status="resolved")
+    sli = calc.from_incidents(SLIDefinition("up", "availability"), [inc],
+                              window_h=2.0)
+    slo = SLO(name="t", business_service="Payments Platform", target_pct=99.9)
+    status = SLOEngine().evaluate_from_sli(slo, sli)
+    # ~10 minutes of a 120-minute window consumed
+    assert 9.0 <= status.consumed_minutes <= 12.0
+    assert status.burn_rate > 1.0 and status.status != "HEALTHY"
+
+
+def test_sla_credit_tiers_and_exposure():
+    from core.sla import SLA, SLAEngine
+    from core.sli import SLIResult, SLIDefinition
+    d = SLIDefinition(name="up", kind="availability")
+    sla = SLA(name="ent", customer="c", business_service="Payments Platform",
+              commitment_pct=99.5, monthly_contract_value=50_000.0)
+
+    def status_for(ratio_pct, excluded=0.0):
+        sla.excluded_minutes = excluded
+        good = int(1000 * ratio_pct / 100)
+        r = SLIResult(d, good_events=good, valid_events=1000,
+                      window_h=100.0, source="incident_timeline")
+        return SLAEngine([sla]).evaluate(r, linked_slo_target=99.9)[0]
+
+    ok = status_for(99.99)
+    assert not ok.breached and ok.credit_pct == 0.0
+    assert ok.financial_exposure == 0.0 and ok.status == "MEETING"
+
+    mild = status_for(99.2)                     # below 99.5, above 99.0
+    assert mild.breached and mild.credit_pct == 10.0
+    assert mild.financial_exposure == 5000.0
+
+    severe = status_for(94.0)                   # below all tiers -> worst applies
+    assert severe.credit_pct == 50.0 and severe.financial_exposure == 25_000.0
+    assert "credit" in severe.action.lower()
+
+    # SLO must sit above the SLA commitment — that gap is the safety margin
+    assert abs(ok.slo_buffer_pct - 0.4) < 0.001
+
+    # exclusions (planned maintenance) are credited back before assessment
+    with_excl = status_for(99.2, excluded=500.0)
+    assert with_excl.achieved_pct > mild.achieved_pct
+    assert not with_excl.breached
+
+
+def test_sla_headroom_and_risk_states():
+    from core.sla import SLA, SLAEngine
+    from core.sli import SLIResult, SLIDefinition
+    d = SLIDefinition(name="up", kind="availability")
+    sla = SLA(name="e", customer="c", business_service="s",
+              commitment_pct=99.0, measurement_period_days=30)
+    # 30d @ 99% => 432 minutes allowed downtime
+    assert abs(sla.allowed_downtime_minutes - 432.0) < 0.1
+
+    r = SLIResult(d, good_events=997, valid_events=1000, window_h=100.0,
+                  source="incident_timeline")   # 0.3% bad => 18 min downtime
+    s = SLAEngine([sla]).evaluate(r)[0]
+    assert abs(s.downtime_minutes - 18.0) < 0.5
+    assert abs(s.headroom_minutes - 414.0) < 1.0
+    assert s.status == "MEETING" and not s.breached

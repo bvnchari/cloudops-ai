@@ -102,6 +102,19 @@ class SLOEngine:
         self.slos = slos or DEFAULT_SLOS
         self.window_h = observation_window_h
 
+    def evaluate_from_sli(self, slo: "SLO", sli_result) -> "SLOStatus":
+        """
+        Bind an SLO to a measured SLI — the correct chain: the indicator is
+        measured, the objective judges it. Bad-event time becomes budget
+        consumption.
+        """
+        window_min = max(sli_result.window_h * 60, 1e-6)
+        consumed = window_min * (1 - sli_result.ratio_pct / 100)
+        return SLOStatus(slo=slo, consumed_minutes=round(consumed, 2),
+                         observed_window_h=sli_result.window_h,
+                         contributing_incidents=[
+                             (str(a), b) for a, b in sli_result.bad_samples])
+
     def evaluate(self, incidents: list[Incident]) -> list[SLOStatus]:
         out = []
         for slo in self.slos:
