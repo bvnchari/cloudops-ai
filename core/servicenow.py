@@ -27,6 +27,7 @@ Configuration (env vars, or a .env file loaded by your shell):
 
 import os
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .itsm import ITSMBackend, Ticket, _sn_class
@@ -39,21 +40,78 @@ class ServiceNowError(RuntimeError):
     pass
 
 
+@dataclass
+class SNConfig:
+    """
+    Connection settings. Can be built from the UI config tab (session-scoped,
+    never persisted to disk) or from environment variables via from_env().
+    """
+    instance: str
+    user: str = ""
+    password: str = field(default="", repr=False)   # keep out of logs/reprs
+    client_id: str = ""
+    client_secret: str = field(default="", repr=False)
+    use_event_api: bool = False
+    timeout_s: float = 15.0
+    max_retries: int = 3
+
+    @property
+    def uses_oauth(self) -> bool:
+        return bool(self.client_id and self.client_secret)
+
+    def validate(self) -> list[str]:
+        problems = []
+        if not self.instance:
+            problems.append("Instance name is required.")
+        if self.instance and ("." in self.instance or "/" in self.instance):
+            problems.append("Use the instance name only (e.g. dev123456), not the full URL.")
+        if not self.user:
+            problems.append("Username is required.")
+        if not self.password:
+            problems.append("Password is required.")
+        if bool(self.client_id) != bool(self.client_secret):
+            problems.append("OAuth needs BOTH client id and client secret (or neither).")
+        return problems
+
+    @classmethod
+    def from_env(cls) -> "SNConfig | None":
+        if not os.environ.get("SN_INSTANCE"):
+            return None
+        return cls(
+            instance=os.environ["SN_INSTANCE"],
+            user=os.environ.get("SN_USER", ""),
+            password=os.environ.get("SN_PASSWORD", ""),
+            client_id=os.environ.get("SN_CLIENT_ID", ""),
+            client_secret=os.environ.get("SN_CLIENT_SECRET", ""),
+            use_event_api=os.environ.get("SN_USE_EVENT_API", "0") == "1",
+            timeout_s=float(os.environ.get("SN_TIMEOUT_S", "15")),
+            max_retries=int(os.environ.get("SN_MAX_RETRIES", "3")),
+        )
+
+
 class EnterpriseServiceNowConnector(ITSMBackend):
-    def __init__(self):
+    def __init__(self, config: SNConfig | None = None):
         import requests
+        cfg = config or SNConfig.from_env()
+        if cfg is None:
+            raise ServiceNowError("No ServiceNow configuration supplied "
+                                  "(pass SNConfig or set SN_INSTANCE).")
+        problems = cfg.validate()
+        if problems:
+            raise ServiceNowError("Invalid configuration: " + " ".join(problems))
+        self.config = cfg
         self.requests = requests
-        self.instance = os.environ["SN_INSTANCE"]
-        self.base = f"https://{self.instance}.service-now.com"
-        self.timeout = float(os.environ.get("SN_TIMEOUT_S", "15"))
-        self.max_retries = int(os.environ.get("SN_MAX_RETRIES", "3"))
-        self.use_event_api = os.environ.get("SN_USE_EVENT_API", "0") == "1"
+        self.instance = cfg.instance
+        self.base = f"https://{cfg.instance}.service-now.com"
+        self.timeout = cfg.timeout_s
+        self.max_retries = cfg.max_retries
+        self.use_event_api = cfg.use_event_api
         self.session = requests.Session()
         self._token = None
         self._token_expiry = 0.0
-        self._oauth = bool(os.environ.get("SN_CLIENT_ID"))
+        self._oauth = cfg.uses_oauth
         if not self._oauth:
-            self.session.auth = (os.environ["SN_USER"], os.environ["SN_PASSWORD"])
+            self.session.auth = (cfg.user, cfg.password)
         self.session.headers.update({"Accept": "application/json",
                                      "Content-Type": "application/json"})
 
@@ -63,10 +121,10 @@ class EnterpriseServiceNowConnector(ITSMBackend):
             return
         r = self.requests.post(f"{self.base}/oauth_token.do", data={
             "grant_type": "password",
-            "client_id": os.environ["SN_CLIENT_ID"],
-            "client_secret": os.environ["SN_CLIENT_SECRET"],
-            "username": os.environ["SN_USER"],
-            "password": os.environ["SN_PASSWORD"],
+            "client_id": self.config.client_id,
+            "client_secret": self.config.client_secret,
+            "username": self.config.user,
+            "password": self.config.password,
         }, timeout=self.timeout)
         if not r.ok:
             raise ServiceNowError(f"OAuth token request failed: {r.status_code} {r.text[:200]}")

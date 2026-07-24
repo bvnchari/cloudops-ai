@@ -129,14 +129,32 @@ def _sn_class(ci_type: str) -> str:
 class ITSMBridge:
     """Orchestrates incident <-> ticket lifecycle."""
 
-    def __init__(self, backend: ITSMBackend | None = None):
+    def __init__(self, backend: ITSMBackend | None = None, sn_config=None):
+        """
+        Backend selection order:
+          1. explicit backend argument
+          2. sn_config (e.g. supplied from the UI config tab)
+          3. SN_* environment variables
+          4. MockITSM (demo default)
+        """
         if backend:
             self.backend = backend
+        elif sn_config is not None:
+            from .servicenow import EnterpriseServiceNowConnector
+            self.backend = EnterpriseServiceNowConnector(sn_config)
         elif os.environ.get("SN_INSTANCE"):
             from .servicenow import EnterpriseServiceNowConnector
             self.backend = EnterpriseServiceNowConnector()
         else:
             self.backend = MockITSM()
+
+    @property
+    def backend_name(self) -> str:
+        return type(self.backend).__name__
+
+    @property
+    def is_live(self) -> bool:
+        return self.backend_name != "MockITSM"
 
     def open_ticket(self, inc: Incident) -> Ticket:
         impact, urgency = PRIORITY_MAP.get(inc.severity, ("3", "4"))

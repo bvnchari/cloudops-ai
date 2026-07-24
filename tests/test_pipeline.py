@@ -129,3 +129,70 @@ def test_phase7_ai_analyst_template_backend():
         # grounded: narrative references the actual RCA CI
         inc = next(i for i in result["incidents"] if i.incident_id == b.incident_id)
         assert inc.probable_root_cause in b.rca_narrative
+
+
+def test_snconfig_validation():
+    from core.servicenow import SNConfig
+    assert SNConfig(instance="dev1", user="u", password="p").validate() == []
+    # full URL instead of instance name
+    bad = SNConfig(instance="https://dev1.service-now.com", user="u", password="p")
+    assert any("instance name only" in p for p in bad.validate())
+    # missing creds
+    assert len(SNConfig(instance="").validate()) >= 3
+    # half-configured oauth
+    half = SNConfig(instance="dev1", user="u", password="p", client_id="cid")
+    assert any("OAuth" in p for p in half.validate())
+    # password kept out of repr (log safety)
+    assert "secret123" not in repr(SNConfig(instance="d", user="u", password="secret123"))
+
+
+def test_bridge_backend_selection():
+    from core.itsm import ITSMBridge, MockITSM
+    b = ITSMBridge(backend=MockITSM())
+    assert b.backend_name == "MockITSM" and b.is_live is False
+
+
+def test_publisher_isolates_errors_and_returns_lifecycles():
+    from core.publisher import publish_incidents
+    from core.itsm import ITSMBridge, MockITSM, Ticket
+
+    result = run_pipeline(verbose=False)
+    incidents = result["incidents"]
+
+    class FlakyBackend(MockITSM):
+        """Second ticket creation fails; batch must continue."""
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+        def create_incident(self, t):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("simulated 500 from ServiceNow")
+            return super().create_incident(t)
+        def fetch_lifecycle(self, t):
+            return {"opened_at": 1000.0, "resolved_at": 1000.0 + 9 * 60, "state": "6"}
+
+    bridge = ITSMBridge(backend=FlakyBackend())
+    pub = publish_incidents(bridge, incidents, topology=result["topology"])
+
+    assert pub.created == len(incidents) - 1          # one failed, rest succeeded
+    assert any("create:" in stage for stage, _ in pub.errors)
+    assert pub.ok is False
+    assert pub.cmdb_cis_synced == len(result["topology"].cis)
+    assert len(pub.lifecycles) == pub.created
+
+    # real lifecycles must drive MTTR
+    from core.kpi import KPIEngine
+    kpi = KPIEngine().compute(400, incidents, ticket_lifecycles=pub.lifecycles)
+    assert abs(kpi.mttr_minutes - 9.0) < 0.01
+
+
+def test_publisher_progress_callback():
+    from core.publisher import publish_incidents
+    from core.itsm import ITSMBridge, MockITSM
+    result = run_pipeline(verbose=False)
+    seen = []
+    publish_incidents(ITSMBridge(backend=MockITSM()), result["incidents"],
+                      topology=result["topology"],
+                      progress_cb=lambda d, t, l: seen.append((d, t)))
+    assert seen and seen[-1][0] == seen[-1][1]        # progress reaches 100%

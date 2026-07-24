@@ -8,6 +8,7 @@ Deploy:       HuggingFace Spaces (Streamlit SDK) — same pattern as CloudBridge
 import pandas as pd
 import streamlit as st
 
+from core.kpi import KPIEngine
 from pipeline import run_pipeline
 
 st.set_page_config(page_title="CloudOps-AI | Enterprise AIOps", layout="wide",
@@ -22,10 +23,25 @@ def load():
     return run_pipeline(verbose=False)
 
 
+# session-scoped state (never persisted to disk, never written to the repo)
+st.session_state.setdefault("sn_config", None)      # SNConfig once validated
+st.session_state.setdefault("sn_status", None)      # last connection test result
+st.session_state.setdefault("publish_result", None)
+
 result = load()
-kpi = result["kpi"]
 stats = result["stats"]
 incidents = result["incidents"]
+
+# If incidents were published to a real ServiceNow instance, recompute KPIs
+# from actual ticket lifecycle timestamps instead of simulated timing.
+pub = st.session_state.publish_result
+if pub and pub.lifecycles:
+    kpi = KPIEngine().compute(stats["raw_alerts"], incidents,
+                              ticket_lifecycles=pub.lifecycles)
+    kpi_source = f"live ServiceNow ({len(pub.lifecycles)} tickets)"
+else:
+    kpi = result["kpi"]
+    kpi_source = "simulated remediation timing"
 
 # ---------------- KPI tiles ----------------
 c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -36,12 +52,13 @@ c3.metric("MTTR", f"{kpi.mttr_minutes:.0f} min" if kpi.mttr_minutes else "n/a")
 c4.metric("Automation Rate", f"{kpi.automation_rate_pct}%")
 c5.metric("Est. Savings", f"${kpi.est_automation_savings_usd/1000:.0f}K/yr")
 c6.metric("Availability", f"{kpi.service_availability_pct}%")
+st.caption(f"MTTR source: {kpi_source}")
 
 st.divider()
 
-tab_funnel, tab_inc, tab_metrics, tab_rem, tab_itsm, tab_ai = st.tabs(
+tab_funnel, tab_inc, tab_metrics, tab_rem, tab_itsm, tab_ai, tab_cfg = st.tabs(
     ["📉 Alert Funnel", "🚨 Incidents", "📈 Telemetry", "🔧 Remediation",
-     "🎫 ITSM", "🤖 AI Analyst"])
+     "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -99,14 +116,29 @@ with tab_rem:
 
 # ---------------- ITSM ----------------
 with tab_itsm:
-    st.subheader("ServiceNow Tickets (auto-created / auto-closed)")
+    pub = st.session_state.publish_result
+    if pub and pub.tickets:
+        st.subheader("ServiceNow Tickets — LIVE")
+        st.success(f"Published to **{pub.backend}** · {pub.created} tickets "
+                   f"({pub.auto_closed} auto-closed) · {pub.cmdb_cis_synced} CMDB CIs "
+                   f"synced · {pub.duration_s}s")
+        tickets = pub.tickets
+    else:
+        st.subheader("ServiceNow Tickets (simulated)")
+        st.info("Running against the in-memory mock. Configure a real instance in "
+                "the **⚙️ Config** tab to publish these incidents for real.")
+        tickets = result["tickets"]
+
     st.dataframe(pd.DataFrame([{
         "Number": t.number, "State": t.state, "Impact": t.impact,
         "Urgency": t.urgency, "Service": t.business_service,
         "CMDB CI": t.cmdb_ci, "Short Description": t.short_description,
-    } for t in result["tickets"]]), use_container_width=True, hide_index=True)
-    st.caption("Backend auto-selects: real ServiceNow (set SN_INSTANCE / SN_USER / "
-               "SN_PASSWORD env vars — a free PDI works) or in-memory mock for demo.")
+    } for t in tickets]), use_container_width=True, hide_index=True)
+
+    if pub and pub.errors:
+        with st.expander(f"⚠️ {len(pub.errors)} error(s) during publish"):
+            for stage, detail in pub.errors:
+                st.error(f"**{stage}** — {detail}")
 
 # ---------------- AI Analyst ----------------
 with tab_ai:
@@ -124,3 +156,136 @@ with tab_ai:
             st.markdown("**Recommended follow-ups**")
             for rec in b.recommendations:
                 st.markdown(f"- {rec}")
+
+# ---------------- Config ----------------
+with tab_cfg:
+    st.subheader("ServiceNow Connection")
+
+    cfg = st.session_state.sn_config
+    if cfg:
+        st.success(f"Configured: **{cfg.instance}** · "
+                   f"auth: {'OAuth2' if cfg.uses_oauth else 'Basic'} · "
+                   f"{'Event API (em_event)' if cfg.use_event_api else 'Table API (incident)'}")
+    else:
+        st.warning("Not configured — the platform is running against the in-memory mock.")
+
+    with st.form("sn_config_form"):
+        col_a, col_b = st.columns(2)
+        with col_a:
+            instance = st.text_input(
+                "Instance name", value=(cfg.instance if cfg else ""),
+                placeholder="dev123456",
+                help="Just the name from your instance URL — not the full https:// address.")
+            user = st.text_input("Username", value=(cfg.user if cfg else ""),
+                                 placeholder="cloudops.integration")
+            password = st.text_input("Password", type="password",
+                                     value=(cfg.password if cfg else ""))
+        with col_b:
+            use_event_api = st.checkbox(
+                "Use ITOM Event Management API (em_event)",
+                value=(cfg.use_event_api if cfg else False),
+                help="Publishes events with dedup keys and lets ServiceNow's own "
+                     "event rules correlate. Requires the Event Management plugin "
+                     "— NOT available on free Personal Developer Instances.")
+            timeout_s = st.number_input("Timeout (seconds)", 5.0, 120.0,
+                                        value=(cfg.timeout_s if cfg else 15.0), step=5.0)
+            max_retries = st.number_input("Max retries", 1, 6,
+                                          value=(cfg.max_retries if cfg else 3))
+
+        with st.expander("OAuth2 (optional — leave blank for basic auth)"):
+            client_id = st.text_input("Client ID", value=(cfg.client_id if cfg else ""))
+            client_secret = st.text_input("Client Secret", type="password",
+                                          value=(cfg.client_secret if cfg else ""))
+
+        submitted = st.form_submit_button("💾 Save & Test Connection", type="primary")
+
+    if submitted:
+        from core.servicenow import SNConfig, EnterpriseServiceNowConnector, ServiceNowError
+        new_cfg = SNConfig(instance=instance.strip(), user=user.strip(),
+                           password=password, client_id=client_id.strip(),
+                           client_secret=client_secret, use_event_api=use_event_api,
+                           timeout_s=float(timeout_s), max_retries=int(max_retries))
+        problems = new_cfg.validate()
+        if problems:
+            for p in problems:
+                st.error(p)
+        else:
+            with st.spinner("Testing connection..."):
+                try:
+                    info = EnterpriseServiceNowConnector(new_cfg).test_connection()
+                    st.session_state.sn_config = new_cfg
+                    st.session_state.sn_status = info
+                    st.success(f"Connected to {info['instance']} "
+                               f"(auth: {info['auth']}). Configuration saved for "
+                               f"this session.")
+                    st.rerun()
+                except ServiceNowError as e:
+                    st.session_state.sn_status = None
+                    st.error(f"Connection failed: {e}")
+                    st.caption("Common causes: instance hibernating (wake it at "
+                               "developer.servicenow.com), wrong instance name, "
+                               "bad credentials, or the user lacks the itil role.")
+                except Exception as e:
+                    st.error(f"Unexpected error: {e}")
+
+    st.divider()
+    st.subheader("Publish Incidents to ServiceNow")
+
+    if not st.session_state.sn_config:
+        st.info("Save a working connection above to enable publishing.")
+    else:
+        c1, c2, c3 = st.columns(3)
+        do_cmdb = c1.checkbox("Sync CMDB", value=True,
+                              help="Idempotent upsert of topology CIs — safe to re-run.")
+        do_close = c2.checkbox("Auto-close remediated", value=True)
+        do_lifecycle = c3.checkbox("Read back lifecycle for real MTTR", value=True)
+
+        st.caption(f"Ready to publish **{len(incidents)} incident(s)** and "
+                   f"**{len(result['topology'].cis)} CI(s)** to "
+                   f"`{st.session_state.sn_config.instance}`.")
+
+        if st.button("🚀 Publish to ServiceNow", type="primary"):
+            from core.itsm import ITSMBridge
+            from core.publisher import publish_incidents
+            bar = st.progress(0.0, text="Starting...")
+
+            def on_progress(done, total, label):
+                bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
+
+            try:
+                bridge = ITSMBridge(sn_config=st.session_state.sn_config)
+                pub_result = publish_incidents(
+                    bridge, incidents, topology=result["topology"],
+                    sync_cmdb=do_cmdb, close_resolved=do_close,
+                    fetch_lifecycle=do_lifecycle, progress_cb=on_progress)
+                st.session_state.publish_result = pub_result
+                bar.empty()
+                if pub_result.ok:
+                    st.success(f"Published {pub_result.created} tickets "
+                               f"({pub_result.auto_closed} auto-closed) in "
+                               f"{pub_result.duration_s}s. See the 🎫 ITSM tab.")
+                else:
+                    st.warning(f"Completed with issues: {pub_result.created} created, "
+                               f"{len(pub_result.errors)} error(s). See the 🎫 ITSM tab.")
+                st.rerun()
+            except Exception as e:
+                bar.empty()
+                st.error(f"Publish failed: {e}")
+
+    if st.session_state.publish_result:
+        if st.button("Clear publish results"):
+            st.session_state.publish_result = None
+            st.rerun()
+
+    st.divider()
+    with st.expander("🔒 How credentials are handled"):
+        st.markdown(
+            "- Credentials live **only in this browser session** — never written "
+            "to disk, never committed, never shared with other visitors.\n"
+            "- They are cleared when the session ends or the app restarts.\n"
+            "- Use a **dedicated integration user** with the `itil` role rather "
+            "than `admin`.\n"
+            "- On a **public** deployment, each visitor supplies their own "
+            "instance — this app ships with no credentials baked in.\n"
+            "- Publishing writes **real tickets** to the instance you configure. "
+            "Point it at a developer/test instance, not production.")
