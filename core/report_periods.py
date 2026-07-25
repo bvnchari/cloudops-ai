@@ -38,12 +38,30 @@ class ReportPeriod:
 
 
 def build_period(period_type: str, custom_days: int | None = None,
-                  end: datetime | None = None) -> ReportPeriod:
-    """Builds a ReportPeriod. For period_type='custom', custom_days is required."""
+                  end: datetime | None = None,
+                  custom_start: datetime | None = None,
+                  custom_end: datetime | None = None) -> ReportPeriod:
+    """Builds a ReportPeriod.
+
+    For period_type='custom', supply EITHER:
+      * custom_start and custom_end (explicit From/To dates), OR
+      * custom_days (a day count ending at `end`, back-compat)
+    custom_start/custom_end take precedence when both are given.
+    """
+    if period_type == "custom" and custom_start is not None and custom_end is not None:
+        start, end = custom_start, custom_end
+        if end <= start:
+            raise ValueError("custom_end must be after custom_start")
+        days = max((end - start).days, 1)
+        label = f"Custom Report ({start:%Y-%m-%d} to {end:%Y-%m-%d})"
+        return ReportPeriod(label=label, period_type=period_type, days=days,
+                           start=start, end=end)
+
     end = end or datetime.now(timezone.utc)
     if period_type == "custom":
         if not custom_days or custom_days < 1:
-            raise ValueError("custom_days must be a positive integer for period_type='custom'")
+            raise ValueError("custom_days or (custom_start and custom_end) "
+                             "required for period_type='custom'")
         days = custom_days
     elif period_type in PERIOD_DAYS:
         days = PERIOD_DAYS[period_type]

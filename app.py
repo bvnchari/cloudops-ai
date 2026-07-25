@@ -5,6 +5,8 @@ Run locally:  streamlit run app.py
 Deploy:       HuggingFace Spaces (Streamlit SDK) — same pattern as CloudBridge.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pandas as pd
 import streamlit as st
 
@@ -105,23 +107,123 @@ with tab_inc:
 
 # ---------------- Telemetry ----------------
 with tab_metrics:
+    import altair as alt
+
     st.subheader("Metric Explorer")
+    st.caption("Live time-series from the active data source — every number "
+               "below (stats, chart, anomalies, exports) is computed from the "
+               "same `result[\"series\"]`/`result[\"signals\"]` the rest of the "
+               "app uses; nothing here is separately mocked.")
     if not result.get("series"):
         st.warning("No metric time-series in LIVE mode. ServiceNow stores events "
                    "and CIs, not raw metrics — connect Prometheus/Datadog for this "
                    "tab, or switch back to demo mode in ⚙️ Config.")
         st.stop()
+
     keys = sorted(result["series"].keys())
-    sel = st.selectbox("Series", [f"{ci} · {m}" for ci, m in keys])
-    ci, metric = sel.split(" · ")
-    pts = result["series"][(ci, metric)]
-    df = pd.DataFrame({"time": pd.to_datetime([p.ts for p in pts], unit="s"),
-                       "value": [p.value for p in pts]}).set_index("time")
-    st.line_chart(df)
-    sigs = [s for s in result["signals"] if s.ci_id == ci and s.metric == metric]
-    if sigs:
-        st.warning(f"{len(sigs)} anomaly signal(s) on this series — "
-                   f"kinds: {sorted({s.kind for s in sigs})}")
+    key_labels = {f"{ci} · {m}": (ci, m) for ci, m in keys}
+    all_signals = result.get("signals", [])
+
+    def _series_df(ci: str, metric: str) -> pd.DataFrame:
+        pts = result["series"][(ci, metric)]
+        sigs = {s.ts for s in all_signals if s.ci_id == ci and s.metric == metric}
+        return pd.DataFrame({
+            "ci_id": ci, "metric": metric,
+            "time": pd.to_datetime([p.ts for p in pts], unit="s"),
+            "value": [p.value for p in pts],
+            "is_anomaly": [p.ts in sigs for p in pts],
+        })
+
+    # ---- Top KPI strip ----
+    total_points = sum(len(result["series"][k]) for k in keys)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Series tracked", len(keys))
+    k2.metric("Data points", f"{total_points:,}")
+    k3.metric("Anomaly signals", len(all_signals))
+    k4.metric("Source", "LIVE" if result.get("mode") == "live" else "Synthetic/Demo")
+
+    st.divider()
+
+    # ---- Series selection (multi-compare) ----
+    sel_labels = st.multiselect(
+        "Series to compare", list(key_labels.keys()),
+        default=[list(key_labels.keys())[0]],
+        help="Select one or more CI · metric pairs. Each renders its own "
+             "chart with anomaly points overlaid in red.")
+
+    if not sel_labels:
+        st.info("Select at least one series above.")
+        st.stop()
+
+    frames = [_series_df(*key_labels[lbl]) for lbl in sel_labels]
+    combined = pd.concat(frames, ignore_index=True)
+
+    # ---- Real time-range filter, driven by the actual data ----
+    tmin, tmax = combined["time"].min(), combined["time"].max()
+    if tmin < tmax:
+        t_start, t_end = st.slider(
+            "Time range", min_value=tmin.to_pydatetime(),
+            max_value=tmax.to_pydatetime(),
+            value=(tmin.to_pydatetime(), tmax.to_pydatetime()),
+            format="MM/DD HH:mm")
+        combined = combined[(combined["time"] >= t_start) & (combined["time"] <= t_end)]
+
+    # ---- Per-series stats table ----
+    stats_rows = []
+    for lbl in sel_labels:
+        ci, metric = key_labels[lbl]
+        sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
+        if sub.empty:
+            continue
+        stats_rows.append({
+            "Series": lbl,
+            "Latest": round(sub["value"].iloc[-1], 3),
+            "Min": round(sub["value"].min(), 3),
+            "Max": round(sub["value"].max(), 3),
+            "Avg": round(sub["value"].mean(), 3),
+            "P95": round(sub["value"].quantile(0.95), 3),
+            "Anomalies": int(sub["is_anomaly"].sum()),
+            "Status": "🔴 Anomalous" if sub["is_anomaly"].any() else "🟢 Normal",
+        })
+    st.dataframe(pd.DataFrame(stats_rows), use_container_width=True, hide_index=True)
+
+    # ---- Chart(s) with anomaly overlay ----
+    for lbl in sel_labels:
+        ci, metric = key_labels[lbl]
+        sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
+        if sub.empty:
+            continue
+        base = alt.Chart(sub).encode(x=alt.X("time:T", title="Time"))
+        line = base.mark_line(color="#1B6FA8").encode(
+            y=alt.Y("value:Q", title=metric))
+        points = base.transform_filter(alt.datum.is_anomaly).mark_circle(
+            size=70, color="#D64545").encode(y="value:Q",
+            tooltip=["time:T", "value:Q"])
+        st.caption(f"**{lbl}**")
+        st.altair_chart((line + points).properties(height=220),
+                        use_container_width=True)
+
+    st.divider()
+
+    # ---- Bulk export: real data, not re-derived ----
+    st.markdown("### 📦 Bulk data export")
+    e1, e2 = st.columns(2)
+    with e1:
+        sel_csv = combined.sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
+        st.download_button(
+            "⬇️ Download selected series (CSV)", sel_csv,
+            file_name="cloudops_selected_series.csv", mime="text/csv",
+            key="metrics_dl_selected")
+    with e2:
+        full_frames = [_series_df(ci, m) for ci, m in keys]
+        full_csv = pd.concat(full_frames, ignore_index=True) \
+                     .sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
+        st.download_button(
+            "⬇️ Download ALL telemetry (CSV)", full_csv,
+            file_name="cloudops_all_telemetry.csv", mime="text/csv",
+            key="metrics_dl_all",
+            help=f"Every point across all {len(keys)} series currently loaded "
+                 f"— {total_points:,} rows.")
 
 # ---------------- Remediation ----------------
 with tab_rem:
@@ -734,9 +836,9 @@ with tab_reports:
     st.caption("Generate a management-ready PDF or Excel report for any period, "
                "or configure a standing email subscription.")
 
-    def _build_current_bundle(period_type: str, custom_days: int | None = None):
+    def _build_current_bundle(period_type: str, custom_start=None, custom_end=None):
         """Builds a ReportBundle from whatever data is currently loaded (`result`)."""
-        period = build_period(period_type, custom_days=custom_days)
+        period = build_period(period_type, custom_start=custom_start, custom_end=custom_end)
         calc = SLICalculator()
         sli_results = []
         for d in DEFAULT_SLIS:
@@ -780,17 +882,41 @@ with tab_reports:
     report_kind = REPORT_TYPES[report_choice]
     _STD_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90}
 
-    def _filtered_bundle(period_type: str, custom_days: int | None,
-                         only: str | None = None):
+    def _filtered_bundle(period_type, custom_start=None, custom_end=None, only=None):
         """Builds the full bundle, then optionally blanks out every section
         except `only` (one of 'sla', 'funnel') so export_pdf/export_excel
         render a single-topic report using the same renderers."""
-        b = _build_current_bundle(period_type, custom_days)
+        b = _build_current_bundle(period_type, custom_start, custom_end)
         if only == "sla":
             b.slo_statuses, b.scorecard, b.gaps, b.hotspots = [], [], [], []
         elif only == "funnel":
             b.slo_statuses, b.sla_statuses, b.scorecard, b.gaps = [], [], [], []
         return b
+
+    def _period_picker(key_prefix: str):
+        """Renders period-type + (standard window OR From/To dates) and
+        returns (period_type, custom_start, custom_end)."""
+        c1, c2 = st.columns(2)
+        period_type = c1.selectbox(
+            "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
+            index=1, key=f"{key_prefix}_period_choice")
+        custom_start = custom_end = None
+        if period_type == "custom":
+            today = datetime.now(timezone.utc).date()
+            with c2:
+                d1, d2 = st.columns(2)
+                from_date = d1.date_input("From", value=today - timedelta(days=14),
+                                          max_value=today, key=f"{key_prefix}_from")
+                to_date = d2.date_input("To", value=today, max_value=today,
+                                        key=f"{key_prefix}_to")
+            if from_date >= to_date:
+                st.error("**From** date must be before **To** date.")
+                return period_type, None, None
+            custom_start = datetime.combine(from_date, datetime.min.time(), tzinfo=timezone.utc)
+            custom_end = datetime.combine(to_date, datetime.min.time(), tzinfo=timezone.utc)
+        else:
+            c2.caption(f"Standard window: **{_STD_DAYS[period_type]} days**")
+        return period_type, custom_start, custom_end
 
     if report_choice == "Incident Postmortem":
         if not incidents:
@@ -810,38 +936,21 @@ with tab_reports:
                 st.session_state["rep_markdown_name"] = f"postmortem_{inc_pick.incident_id}.md"
 
     elif report_choice == "Executive Briefing":
-        c1, c2 = st.columns(2)
-        period_choice = c1.selectbox(
-            "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
-            index=1, key="rep_period_choice_exec")
-        custom_days = None
-        if period_choice == "custom":
-            custom_days = c2.number_input("Custom period (days)", 1, 365, 14,
-                                          key="rep_custom_days_exec")
-        else:
-            c2.caption(f"Standard window: **{_STD_DAYS[period_choice]} days**")
+        period_choice, c_start, c_end = _period_picker("rep_exec")
         if st.button("🔄 Build executive briefing", key="rep_build_exec"):
             from core.reports import exec_report_markdown
-            b = _build_current_bundle(period_choice, custom_days)
+            b = _build_current_bundle(period_choice, c_start, c_end)
             st.session_state["rep_markdown"] = exec_report_markdown(
                 b.kpi, b.stats, b.slo_statuses, b.scorecard, b.gaps,
                 hotspots=b.hotspots, period_label=b.period.label)
             st.session_state["rep_markdown_name"] = "CloudOps-AI_Executive_Briefing.md"
 
     else:  # bundle-backed: Full Reliability Report, SLA Compliance, Alert Funnel / Noise
-        c1, c2 = st.columns(2)
-        period_choice = c1.selectbox(
-            "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
-            index=1, key="rep_period_choice")
-        custom_days = None
-        if period_choice == "custom":
-            custom_days = c2.number_input("Custom period (days)", 1, 365, 14, key="rep_custom_days")
-        else:
-            c2.caption(f"Standard window: **{_STD_DAYS[period_choice]} days**")
-
+        period_choice, c_start, c_end = _period_picker("rep")
         _only = {"SLA Compliance": "sla", "Alert Funnel / Noise": "funnel"}.get(report_choice)
         if st.button("🔄 Build report bundle", key="rep_build_btn"):
-            st.session_state["rep_bundle"] = _filtered_bundle(period_choice, custom_days, only=_only)
+            st.session_state["rep_bundle"] = _filtered_bundle(
+                period_choice, c_start, c_end, only=_only)
             st.session_state["rep_markdown"] = None
 
     # ---- Downloads ----
