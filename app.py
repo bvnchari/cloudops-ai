@@ -29,6 +29,9 @@ def load():
 st.session_state.setdefault("sn_config", None)      # SNConfig once validated
 st.session_state.setdefault("sn_status", None)      # last connection test result
 st.session_state.setdefault("publish_result", None)
+st.session_state.setdefault("jira_config", None)     # JiraConfig once validated
+st.session_state.setdefault("jira_status", None)     # last connection test result
+st.session_state.setdefault("jira_issues", [])        # JiraIssue objects filed this session
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
@@ -267,7 +270,7 @@ with tab_itsm:
            / len(resolved)) if resolved else None
     breaches = [t for t in tickets if _is_breach(t)]
 
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.metric("Total tickets", len(tickets))
     k2.metric("Open", open_n)
     k3.metric("Resolved", len(tickets) - open_n)
@@ -275,6 +278,7 @@ with tab_itsm:
     k5.metric("SLA breaches", len(breaches),
              delta=None if not breaches else f"-{len(breaches)}",
              delta_color="inverse")
+    k6.metric("Filed in Jira", len(st.session_state.jira_issues))
 
     st.divider()
 
@@ -309,11 +313,16 @@ with tab_itsm:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # ---- Cross-linked ticket detail (ties back to the correlated Incident) ----
+    # ---- Cross-linked ticket detail (ties back to the correlated Incident
+    # and, if synced, the Jira engineering issue) ----
     incidents_by_id = {i.incident_id: i for i in incidents}
-    with st.expander(f"🔍 Ticket detail & incident cross-link ({len(filtered)} tickets)"):
+    jira_by_incident = {i.incident_id: i for i in st.session_state.jira_issues}
+    from core.insights import automation_gaps as _auto_gaps_itsm
+    _gap_ids = {g.incident_id for g in _auto_gaps_itsm(incidents)}
+    with st.expander(f"🔍 Ticket detail & cross-links ({len(filtered)} tickets)"):
         for t in filtered:
             inc = incidents_by_id.get(t.incident_id)
+            jira = jira_by_incident.get(t.incident_id)
             st.markdown(f"**{t.number}** · {t.short_description}")
             c1, c2, c3 = st.columns(3)
             c1.caption(f"State: **{t.state}** · Impact **P{t.impact}** / "
@@ -326,6 +335,13 @@ with tab_itsm:
                 st.caption(f"↳ Linked incident **{inc.incident_id}** · root cause "
                           f"**{inc.probable_root_cause or 'not determined'}** · "
                           f"{inc.raw_alert_count} alerts correlated")
+            if jira:
+                st.caption(f"🔧 Jira: **[{jira.key}]({jira.url})** "
+                          f"({jira.reason.replace('_', ' ')})")
+            elif t.incident_id in _gap_ids or _is_breach(t):
+                st.caption("🟡 Not yet filed in Jira — qualifies as engineering "
+                          "backlog (automation gap or SLA breach). Sync from "
+                          "**⚙️ Config → Jira Integration**.")
             if t.close_notes:
                 st.caption(f"Close notes: {t.close_notes}")
             st.divider()
@@ -348,7 +364,8 @@ with tab_itsm:
     with e2:
         if st.button("📤 Generate ITSM Ticket Summary report", key="itsm_gen_report"):
             md = itsm_report_markdown(filtered or tickets, period_label="current window",
-                                      sla_hours=SLA_HOURS)
+                                      sla_hours=SLA_HOURS,
+                                      jira_issues=st.session_state.jira_issues)
             st.session_state["rep_markdown"] = md
             st.session_state["rep_markdown_name"] = "CloudOps-AI_ITSM_Ticket_Summary.md"
             st.session_state["rep_type_choice"] = "ITSM Ticket Summary"
@@ -493,6 +510,110 @@ with tab_cfg:
     if st.session_state.publish_result:
         if st.button("Clear publish results"):
             st.session_state.publish_result = None
+            st.rerun()
+
+    st.divider()
+    st.subheader("Jira Integration — Engineering Backlog Sync")
+    st.caption("When Jira is integrated alongside ServiceNow, CloudOps-AI "
+               "auto-files an engineering Jira issue — cross-referenced to "
+               "the ServiceNow ticket number — for any incident that's an "
+               "**automation-backlog gap** (no runbook matched) or has "
+               "**breached its SLA** while still open. Everything else stays "
+               "in ServiceNow only, so Jira doesn't fill up with noise.")
+
+    jcfg = st.session_state.jira_config
+    if jcfg:
+        st.success(f"Configured: **{jcfg.base_url}** · project "
+                   f"**{jcfg.project_key}** · issue type **{jcfg.issue_type}**")
+    else:
+        st.warning("Not configured — Jira sync runs against an in-memory mock.")
+
+    with st.form("jira_config_form"):
+        j1, j2 = st.columns(2)
+        with j1:
+            jira_url = st.text_input(
+                "Jira base URL", value=(jcfg.base_url if jcfg else ""),
+                placeholder="https://yourcompany.atlassian.net")
+            jira_email = st.text_input("Atlassian account email",
+                                       value=(jcfg.email if jcfg else ""))
+            jira_token = st.text_input("API token", type="password",
+                                       value=(jcfg.api_token if jcfg else ""),
+                                       help="Generate at id.atlassian.com -> API tokens.")
+        with j2:
+            jira_project = st.text_input("Project key", value=(jcfg.project_key if jcfg else ""),
+                                         placeholder="AIOPS")
+            jira_issue_type = st.text_input("Issue type",
+                                            value=(jcfg.issue_type if jcfg else "Bug"))
+            jira_timeout = st.number_input("Timeout (seconds)", 5.0, 120.0,
+                                           value=(jcfg.timeout_s if jcfg else 15.0), step=5.0)
+        jira_submitted = st.form_submit_button("💾 Save & Test Jira Connection", type="primary")
+
+    if jira_submitted:
+        from core.jira import JiraConfig, EnterpriseJiraConnector, JiraError
+        new_jcfg = JiraConfig(base_url=jira_url.strip().rstrip("/"), email=jira_email.strip(),
+                              api_token=jira_token, project_key=jira_project.strip(),
+                              issue_type=jira_issue_type.strip() or "Bug",
+                              timeout_s=float(jira_timeout))
+        problems = new_jcfg.validate()
+        if problems:
+            for p in problems:
+                st.error(p)
+        else:
+            with st.spinner("Testing Jira connection..."):
+                try:
+                    info = EnterpriseJiraConnector(new_jcfg).test_connection()
+                    st.session_state.jira_config = new_jcfg
+                    st.session_state.jira_status = info
+                    st.success(f"Connected as {info['account']}. Configuration "
+                               f"saved for this session.")
+                    st.rerun()
+                except JiraError as e:
+                    st.session_state.jira_status = None
+                    st.error(f"Connection failed: {e}")
+                except Exception as e:
+                    st.error(f"Unexpected error: {e}")
+
+    st.markdown("**Sync engineering backlog to Jira**")
+    _pub_for_jira = st.session_state.publish_result
+    _tickets_for_jira = (_pub_for_jira.tickets if (_pub_for_jira and _pub_for_jira.tickets)
+                        else result["tickets"])
+    from core.insights import automation_gaps as _auto_gaps_check
+    _gaps_for_jira = _auto_gaps_check(incidents)
+    _already_filed = {i.incident_id for i in st.session_state.jira_issues}
+    from core.jira import sync_candidates
+    _candidates = sync_candidates(_tickets_for_jira, _gaps_for_jira, _already_filed)
+    st.caption(f"{len(_candidates)} ticket(s) currently qualify "
+              f"(automation gap or SLA breach) and haven't been filed yet.")
+
+    if st.button("🔧 Sync to Jira", disabled=not _candidates, key="jira_sync_btn"):
+        from core.jira import JiraBridge, sync_to_jira
+        bar = st.progress(0.0, text="Starting...")
+
+        def on_jira_progress(done, total, label):
+            bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
+
+        try:
+            bridge = JiraBridge(jira_config=st.session_state.jira_config)
+            filed = sync_to_jira(bridge, _tickets_for_jira, _gaps_for_jira,
+                                 _already_filed, progress_cb=on_jira_progress)
+            st.session_state.jira_issues = st.session_state.jira_issues + filed
+            bar.empty()
+            st.success(f"Filed {len(filed)} of {len(_candidates)} Jira issue(s). "
+                      f"See the 🎫 ITSM tab for cross-linked tickets.")
+            st.rerun()
+        except Exception as e:
+            bar.empty()
+            st.error(f"Jira sync failed: {e}")
+
+    if st.session_state.jira_issues:
+        st.dataframe(pd.DataFrame([{
+            "Jira Key": i.key, "Incident": i.incident_id,
+            "SN Ticket": i.sn_ticket_number, "Reason": i.reason,
+            "Status": i.status, "URL": i.url,
+        } for i in st.session_state.jira_issues]),
+            use_container_width=True, hide_index=True)
+        if st.button("Clear Jira sync results"):
+            st.session_state.jira_issues = []
             st.rerun()
 
     st.divider()
@@ -1053,7 +1174,8 @@ with tab_reports:
                   f"({'LIVE ServiceNow' if _pub and _pub.tickets else 'simulated'}).")
         if st.button("🔄 Build ITSM ticket summary", key="rep_build_itsm"):
             from core.reports import itsm_report_markdown
-            st.session_state["rep_markdown"] = itsm_report_markdown(_tickets)
+            st.session_state["rep_markdown"] = itsm_report_markdown(
+                _tickets, jira_issues=st.session_state.jira_issues)
             st.session_state["rep_markdown_name"] = "CloudOps-AI_ITSM_Ticket_Summary.md"
 
     else:  # bundle-backed: Full Reliability Report, SLA Compliance, Alert Funnel / Noise
