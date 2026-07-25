@@ -732,10 +732,42 @@ with tab_cfg:
                "Remediation and Change Mgmt execute and verify real fixes — "
                "see each provider's tab for its own Save & Test.")
 
-    conn_group, infra_group = st.tabs(["🔌 Connections", "🏗️ Infrastructure & Execution"])
+    st.markdown("""
+    <style>
+    /* Top-level: Connections (blue) vs Infrastructure & Execution (orange) */
+    .st-key-cfg_top_level div[data-baseweb="tab-list"] button:nth-child(1) p { color: #1B6FA8 !important; font-weight: 600; }
+    .st-key-cfg_top_level div[data-baseweb="tab-list"] button:nth-child(2) p { color: #C0621F !important; font-weight: 600; }
+    .st-key-cfg_top_level div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #1B6FA8 !important; }
+    .st-key-cfg_top_level div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #C0621F !important; }
+
+    /* Connections sub-tabs: ServiceNow / Jira / LLM — each a distinct shade */
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(1) p { color: #0F6E56 !important; }
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(2) p { color: #534AB7 !important; }
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(3) p { color: #A8781E !important; }
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #0F6E56 !important; }
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #534AB7 !important; }
+    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(3) { border-bottom-color: #A8781E !important; }
+
+    /* Infrastructure sub-tabs: Kubernetes / AWS / GCP / Azure / Inventory — each distinct */
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(1) p { color: #2C5F8A !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(2) p { color: #D2691E !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(3) p { color: #1A73E8 !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(4) p { color: #6264A7 !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(5) p { color: #117A65 !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #2C5F8A !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #D2691E !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(3) { border-bottom-color: #1A73E8 !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(4) { border-bottom-color: #6264A7 !important; }
+    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(5) { border-bottom-color: #117A65 !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.container(key="cfg_top_level"):
+        conn_group, infra_group = st.tabs(["🔌 Connections", "🏗️ Infrastructure & Execution"])
 
     with conn_group:
-        sn_tab, jira_tab, llm_tab = st.tabs(["🎫 ServiceNow", "🔧 Jira", "🤖 LLM (Anthropic)"])
+        with st.container(key="cfg_conn_subtabs"):
+            sn_tab, jira_tab, llm_tab = st.tabs(["🎫 ServiceNow", "🔧 Jira", "🤖 LLM (Anthropic)"])
 
         with sn_tab:
             st.subheader("ServiceNow Connection")
@@ -1126,8 +1158,9 @@ with tab_cfg:
 
 
     with infra_group:
-        k8s_tab, aws_tab, gcp_tab, azure_tab, inv_tab = st.tabs(
-            ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "📋 Cluster Inventory"])
+        with st.container(key="cfg_infra_subtabs"):
+            k8s_tab, aws_tab, gcp_tab, azure_tab, inv_tab = st.tabs(
+                ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "📋 Cluster Inventory"])
 
         with k8s_tab:
             st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
