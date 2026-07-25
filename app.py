@@ -131,8 +131,8 @@ st.divider()
 (tab_oncall, tab_exec, tab_slx, tab_reports, tab_funnel, tab_inc, tab_metrics,
  tab_rem, tab_change, tab_itsm, tab_ai, tab_cfg) = st.tabs(
     ["🎯 On-Call", "📊 Executive", "🎚️ SLI/SLO/SLA", "📤 Reports & Delivery",
-     "📉 Alert Funnel", "🚨 Incidents", "📈 Telemetry", "🔧 Remediation",
-     "⚡ Change Mgmt", "🎫 Incident Tickets", "🤖 AI Analyst", "⚙️ Config"])
+     "📉 Alert Funnel", "🚨 Alerts", "📈 Telemetry", "🔧 Remediation",
+     "⚡ Change Mgmt", "🎫 Incidents", "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -771,10 +771,10 @@ with tab_cfg:
                 if pub_result.ok:
                     st.success(f"Published {pub_result.created} tickets "
                                f"({pub_result.auto_closed} auto-closed) in "
-                               f"{pub_result.duration_s}s. See the 🎫 Incident Tickets tab.")
+                               f"{pub_result.duration_s}s. See the 🎫 Incidents tab.")
                 else:
                     st.warning(f"Completed with issues: {pub_result.created} created, "
-                               f"{len(pub_result.errors)} error(s). See the 🎫 Incident Tickets tab.")
+                               f"{len(pub_result.errors)} error(s). See the 🎫 Incidents tab.")
                 # Auto-refresh: if we're in live mode, re-pull CMDB/alerts now so
                 # the just-published tickets and any lifecycle updates show up
                 # immediately, instead of requiring a second manual pull.
@@ -886,7 +886,7 @@ with tab_cfg:
             st.session_state.jira_issues = st.session_state.jira_issues + filed
             bar.empty()
             st.success(f"Filed {len(filed)} of {len(_candidates)} Jira issue(s). "
-                      f"See the 🎫 Incident Tickets tab for cross-linked tickets.")
+                      f"See the 🎫 Incidents tab for cross-linked tickets.")
             st.rerun()
         except Exception as e:
             bar.empty()
@@ -1188,7 +1188,7 @@ with tab_exec:
 
     st.divider()
     st.subheader("ITSM & Jira Sync Status")
-    st.caption("Same live ticket/Jira data as the 🎫 Incident Tickets tab and 🔧 Jira sync in "
+    st.caption("Same live ticket/Jira data as the 🎫 Incidents tab and 🔧 Jira sync in "
                "⚙️ Config — surfaced here for management visibility, not "
                "recomputed separately.")
     from core.jira import sla_breached as _exec_sla_breached
