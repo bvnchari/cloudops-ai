@@ -32,6 +32,7 @@ st.session_state.setdefault("publish_result", None)
 st.session_state.setdefault("jira_config", None)     # JiraConfig once validated
 st.session_state.setdefault("jira_status", None)     # last connection test result
 st.session_state.setdefault("jira_issues", [])        # JiraIssue objects filed this session
+st.session_state.setdefault("change_requests", {})     # change_id -> ChangeRequest
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
@@ -73,10 +74,10 @@ st.caption(f"MTTR source: {kpi_source}")
 st.divider()
 
 (tab_oncall, tab_exec, tab_slx, tab_reports, tab_funnel, tab_inc, tab_metrics,
- tab_rem, tab_itsm, tab_ai, tab_cfg) = st.tabs(
+ tab_rem, tab_change, tab_itsm, tab_ai, tab_cfg) = st.tabs(
     ["🎯 On-Call", "📊 Executive", "🎚️ SLI/SLO/SLA", "📤 Reports & Delivery",
      "📉 Alert Funnel", "🚨 Incidents", "📈 Telemetry", "🔧 Remediation",
-     "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
+     "⚡ Change Mgmt", "🎫 ITSM", "🤖 AI Analyst", "⚙️ Config"])
 
 # ---------------- Funnel ----------------
 with tab_funnel:
@@ -293,8 +294,169 @@ with tab_rem:
         "Actions": " → ".join(a.name for a in rb.actions),
     } for rb in DEFAULT_RUNBOOKS]), use_container_width=True, hide_index=True)
 
-# ---------------- ITSM ----------------
-with tab_itsm:
+# ---------------- Change Management ----------------
+with tab_change:
+    from core.change import (AIChangePlanner, advance_to_dev, advance_to_test,
+                             submit_for_prod_approval, approve, advance_to_prod,
+                             close as close_change, open_change_ticket,
+                             open_jira_for_change)
+
+    st.subheader("⚡ AI-Assisted Change Management")
+    st.caption("Engineer submits a problem statement → AI drafts a change "
+               "plan + backout plan → Dev/Test dry-run → **two-stage** Prod "
+               "approval → linked ServiceNow Change + Jira issue. Every "
+               "stage is a dry-run — nothing here executes real commands, "
+               "same honesty model as the 🔧 Remediation tab. Wire a real "
+               "Executor into `core.change` when you're ready to actually "
+               "run these against an environment.")
+
+    with st.form("change_new_form"):
+        problem = st.text_area(
+            "Problem statement", placeholder="e.g. Disk utilization on "
+            "node-02 is climbing steadily and will breach 95% within a day.")
+        requester = st.text_input("Requested by", placeholder="your name")
+        submitted_new = st.form_submit_button("🤖 Draft change plan", type="primary")
+
+    if submitted_new:
+        if not problem.strip():
+            st.error("Problem statement is required.")
+        else:
+            planner = AIChangePlanner(api_key=st.session_state.anthropic_key or None)
+            plan = planner.generate(problem)
+            seq = len(st.session_state.change_requests) + 1
+            change_id = f"CHG-AI-{seq:04d}"
+            from core.change import ChangeRequest
+            cr = ChangeRequest(change_id=change_id, problem_statement=problem,
+                              requested_by=requester or "unknown", plan=plan)
+            st.session_state.change_requests[change_id] = cr
+            st.success(f"Drafted **{change_id}** via **{plan.source}** "
+                      f"(risk: {plan.risk}).")
+            st.rerun()
+
+    st.divider()
+    crs = st.session_state.change_requests
+    if not crs:
+        st.info("No change requests yet — draft one above.")
+    else:
+        pick = st.selectbox("Change request", list(crs.keys())[::-1],
+                            format_func=lambda k: f"{k} · {crs[k].status} · "
+                                                  f"{crs[k].problem_statement[:50]}")
+        cr = crs[pick]
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Status", cr.status)
+        c2.metric("Risk", cr.plan.risk)
+        c3.metric("Plan source", cr.plan.source)
+        if cr.plan.source == "manual_review_required":
+            st.warning("No LLM configured and no runbook matched — this plan "
+                      "needs a human author before proceeding.")
+
+        st.markdown("**Change plan**")
+        for s in cr.plan.steps:
+            st.code(f"{s.name}: {s.command}", language="bash")
+        st.markdown("**Backout plan**")
+        for s in cr.plan.backout_steps:
+            st.code(f"{s.name}: {s.command}", language="bash")
+        st.caption(cr.plan.rationale)
+
+        st.divider()
+        st.markdown("### Dev / Test dry-run")
+        d1, d2 = st.columns(2)
+        with d1:
+            if st.button("▶️ Dry-run in Dev", key=f"dev_{cr.change_id}",
+                        disabled=cr.dev_evidence is not None):
+                advance_to_dev(cr)
+                st.rerun()
+            if cr.dev_evidence:
+                st.success("Dev dry-run recorded.")
+                with st.expander("Dev evidence"):
+                    for line in cr.dev_evidence.steps_logged:
+                        st.code(line, language="bash")
+                    st.caption(cr.dev_evidence.note)
+        with d2:
+            if st.button("▶️ Dry-run in Test", key=f"test_{cr.change_id}",
+                        disabled=cr.dev_evidence is None or cr.test_evidence is not None):
+                advance_to_test(cr)
+                st.rerun()
+            if cr.test_evidence:
+                st.success("Test dry-run recorded.")
+                with st.expander("Test evidence"):
+                    for line in cr.test_evidence.steps_logged:
+                        st.code(line, language="bash")
+                    st.caption(cr.test_evidence.note)
+
+        st.divider()
+        st.markdown("### Prod — two-stage approval")
+        if not cr.ready_for_prod:
+            st.info("Dev and Test dry-runs must both be recorded before "
+                    "requesting Prod approval.")
+        else:
+            if cr.status == "dev" or cr.status == "test":
+                if st.button("📨 Submit for Prod approval", key=f"submit_{cr.change_id}"):
+                    submit_for_prod_approval(cr)
+                    sn_cfg = st.session_state.sn_config
+                    ticket = open_change_ticket(sn_cfg, cr)
+                    cr.sn_change_number = ticket["number"]
+                    try:
+                        from core.jira import JiraBridge
+                        jbridge = JiraBridge(jira_config=st.session_state.jira_config)
+                        issue = open_jira_for_change(jbridge, cr)
+                        cr.jira_key = issue.key
+                        st.session_state.jira_issues = st.session_state.jira_issues + [issue]
+                    except Exception as e:
+                        st.warning(f"SN Change opened ({ticket['number']}) but Jira "
+                                  f"filing failed: {e}")
+                    st.rerun()
+            if cr.sn_change_number:
+                st.caption(f"🎫 ServiceNow Change: **{cr.sn_change_number}**" +
+                          (f" · 🔧 Jira: **{cr.jira_key}**" if cr.jira_key else ""))
+
+            if cr.status in ("pending_prod_approval", "approved_stage1"):
+                a1, a2 = st.columns(2)
+                with a1:
+                    if not cr.stage1_done:
+                        approver1 = st.text_input("Stage 1 approver (peer/lead)",
+                                                  key=f"appr1_{cr.change_id}")
+                        if st.button("✅ Approve — Stage 1", key=f"apr1btn_{cr.change_id}"):
+                            if approver1.strip():
+                                approve(cr, "stage1", approver1)
+                                st.rerun()
+                            else:
+                                st.error("Approver name required.")
+                    else:
+                        a = next(a for a in cr.approvals if a.stage == "stage1")
+                        st.success(f"Stage 1 approved by **{a.approver}**")
+                with a2:
+                    if cr.stage1_done and not cr.stage2_done:
+                        approver2 = st.text_input("Stage 2 approver (change manager/CAB)",
+                                                  key=f"appr2_{cr.change_id}")
+                        if st.button("✅ Approve — Stage 2", key=f"apr2btn_{cr.change_id}"):
+                            if approver2.strip():
+                                approve(cr, "stage2", approver2)
+                                st.rerun()
+                            else:
+                                st.error("Approver name required.")
+                    elif cr.stage2_done:
+                        a = next(a for a in cr.approvals if a.stage == "stage2")
+                        st.success(f"Stage 2 approved by **{a.approver}**")
+
+            if cr.fully_approved and cr.status != "prod" and cr.status != "closed":
+                if st.button("🚀 Dry-run in Prod", key=f"prod_{cr.change_id}", type="primary"):
+                    advance_to_prod(cr)
+                    st.rerun()
+            if cr.prod_evidence:
+                st.success("Prod dry-run recorded — both approvals on file, "
+                          "ready for a human (or a wired-in Executor) to "
+                          "actually execute.")
+                with st.expander("Prod evidence"):
+                    for line in cr.prod_evidence.steps_logged:
+                        st.code(line, language="bash")
+                    st.caption(cr.prod_evidence.note)
+                if cr.status != "closed" and st.button("🔒 Close change", key=f"close_{cr.change_id}"):
+                    close_change(cr)
+                    st.rerun()
+
+
     from core.reports import itsm_report_markdown
 
     pub = st.session_state.publish_result
