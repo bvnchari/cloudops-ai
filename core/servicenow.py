@@ -40,6 +40,12 @@ class ServiceNowError(RuntimeError):
     pass
 
 
+class ServiceNowClientError(ServiceNowError):
+    """Non-retryable 4xx response (bad request, forbidden, not found, etc) —
+    the request itself is wrong, so retrying identically won't help."""
+    pass
+
+
 @dataclass
 class SNConfig:
     """
@@ -148,9 +154,14 @@ class EnterpriseServiceNowConnector(ITSMBackend):
                 if r.status_code == 429 or r.status_code >= 500:
                     raise ServiceNowError(f"{r.status_code}: {r.text[:200]}")
                 if not r.ok:
-                    raise ServiceNowError(
+                    # Non-retryable client error (400/403/404/etc) — retrying the
+                    # exact same bad request 3x just wastes time and delays the
+                    # real error message. Fail fast with the raw response.
+                    raise ServiceNowClientError(
                         f"{method} {path} -> {r.status_code}: {r.text[:300]}")
                 return r.json()
+            except ServiceNowClientError:
+                raise
             except (self.requests.exceptions.ConnectionError,
                     self.requests.exceptions.Timeout,
                     ServiceNowError) as e:
@@ -202,10 +213,13 @@ class EnterpriseServiceNowConnector(ITSMBackend):
             t.state, t.close_notes = "Cleared", notes
             t.resolved_at = time.time()
             return t
-        self._request("PATCH", f"/api/now/table/incident/{t.sys_id}", json={
-            "state": "6", "close_code": "Solved (Permanently)",
-            "close_notes": notes, "resolution_code": "Solved (Permanently)",
-        })
+        self._request(
+            "PATCH", f"/api/now/table/incident/{t.sys_id}"
+                     f"?sysparm_input_display_value=true",
+            json={
+                "state": "Resolved", "close_code": "Solved (Permanently)",
+                "close_notes": notes,
+            })
         t.state, t.close_notes = "Resolved", notes
         t.resolved_at = time.time()
         return t
@@ -231,12 +245,24 @@ class EnterpriseServiceNowConnector(ITSMBackend):
         count = 0
         for ci in topology.cis.values():
             table = _sn_class(ci.ci_type)
-            existing = self._request(
-                "GET", f"/api/now/table/{table}"
-                       f"?sysparm_query=name={ci.name}&sysparm_fields=sys_id&sysparm_limit=1"
-            )["result"]
             payload = {"name": ci.name, "short_description":
                        f"CloudOps-AI | layer={ci.layer} | service={ci.business_service}"}
+            try:
+                existing = self._request(
+                    "GET", f"/api/now/table/{table}"
+                           f"?sysparm_query=name={ci.name}&sysparm_fields=sys_id&sysparm_limit=1"
+                )["result"]
+            except ServiceNowClientError as e:
+                if "Invalid table" not in str(e):
+                    raise
+                # This CI class table isn't installed on this instance (common on
+                # base PDIs without the matching CMDB plugin) — fall back to the
+                # generic cmdb_ci table so the CI still gets tracked somewhere.
+                table = "cmdb_ci"
+                existing = self._request(
+                    "GET", f"/api/now/table/{table}"
+                           f"?sysparm_query=name={ci.name}&sysparm_fields=sys_id&sysparm_limit=1"
+                )["result"]
             if existing:
                 self._request("PATCH",
                               f"/api/now/table/{table}/{existing[0]['sys_id']}",
