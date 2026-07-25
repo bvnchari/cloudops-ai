@@ -38,6 +38,48 @@ st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
 st.session_state.setdefault("report_subscriptions", {})   # name -> ReportSubscription
 
+def _auto_load_sn_config():
+    """If SN_* secrets/env vars are set and no config is loaded yet, connect
+    automatically — avoids re-typing credentials after every refresh/redeploy.
+    Silently no-ops if unset or the test connection fails; the Config tab
+    form remains available as a manual fallback either way."""
+    if st.session_state.sn_config is not None:
+        return
+    try:
+        from core.servicenow import SNConfig, EnterpriseServiceNowConnector
+        secrets_sn = dict(st.secrets.get("servicenow", {})) if hasattr(st, "secrets") else {}
+        cfg = SNConfig(
+            instance=secrets_sn.get("instance", ""), user=secrets_sn.get("user", ""),
+            password=secrets_sn.get("password", ""),
+            client_id=secrets_sn.get("client_id", ""),
+            client_secret=secrets_sn.get("client_secret", ""),
+        ) if secrets_sn.get("instance") else SNConfig.from_env()
+        if cfg and not cfg.validate():
+            EnterpriseServiceNowConnector(cfg).test_connection()
+            st.session_state.sn_config = cfg
+    except Exception:
+        pass  # fall back to manual entry in the Config tab — never block startup
+
+def _auto_load_jira_config():
+    if st.session_state.jira_config is not None:
+        return
+    try:
+        from core.jira import JiraConfig, EnterpriseJiraConnector
+        secrets_jira = dict(st.secrets.get("jira", {})) if hasattr(st, "secrets") else {}
+        cfg = JiraConfig(
+            base_url=secrets_jira.get("base_url", ""), email=secrets_jira.get("email", ""),
+            api_token=secrets_jira.get("api_token", ""),
+            project_key=secrets_jira.get("project_key", ""),
+        ) if secrets_jira.get("base_url") else JiraConfig.from_env()
+        if cfg and not cfg.validate():
+            EnterpriseJiraConnector(cfg).test_connection()
+            st.session_state.jira_config = cfg
+    except Exception:
+        pass
+
+_auto_load_sn_config()
+_auto_load_jira_config()
+
 if st.session_state.data_source == "live" and st.session_state.live_result:
     result = st.session_state.live_result
     st.info(f"**LIVE mode** — topology and alerts sourced from ServiceNow "
