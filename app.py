@@ -735,30 +735,47 @@ with tab_cfg:
     st.markdown("""
     <style>
     /* Top-level: Connections (blue) vs Infrastructure & Execution (orange) */
-    .st-key-cfg_top_level div[data-baseweb="tab-list"] button:nth-child(1) p { color: #1B6FA8 !important; font-weight: 600; }
-    .st-key-cfg_top_level div[data-baseweb="tab-list"] button:nth-child(2) p { color: #C0621F !important; font-weight: 600; }
-    .st-key-cfg_top_level div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #1B6FA8 !important; }
-    .st-key-cfg_top_level div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #C0621F !important; }
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1),
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1) p {
+        color: #1B6FA8 !important; font-weight: 600 !important;
+    }
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2),
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2) p {
+        color: #C0621F !important; font-weight: 600 !important;
+    }
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(1) { border-bottom-color: #1B6FA8 !important; background-color: rgba(27,111,168,0.08) !important; }
+    [class*="st-key-cfg_top_level"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(2) { border-bottom-color: #C0621F !important; background-color: rgba(192,98,31,0.08) !important; }
 
     /* Connections sub-tabs: ServiceNow / Jira / LLM — each a distinct shade */
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(1) p { color: #0F6E56 !important; }
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(2) p { color: #534AB7 !important; }
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button:nth-child(3) p { color: #A8781E !important; }
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #0F6E56 !important; }
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #534AB7 !important; }
-    .st-key-cfg_conn_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(3) { border-bottom-color: #A8781E !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1),
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1) p { color: #0F6E56 !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2),
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2) p { color: #534AB7 !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(3),
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(3) p { color: #A8781E !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(1) { border-bottom-color: #0F6E56 !important; background-color: rgba(15,110,86,0.08) !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(2) { border-bottom-color: #534AB7 !important; background-color: rgba(83,74,183,0.08) !important; }
+    [class*="st-key-cfg_conn_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(3) { border-bottom-color: #A8781E !important; background-color: rgba(168,120,30,0.08) !important; }
 
     /* Infrastructure sub-tabs: Kubernetes / AWS / GCP / Azure / Inventory — each distinct */
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(1) p { color: #2C5F8A !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(2) p { color: #D2691E !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(3) p { color: #1A73E8 !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(4) p { color: #6264A7 !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button:nth-child(5) p { color: #117A65 !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(1) { border-bottom-color: #2C5F8A !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(2) { border-bottom-color: #D2691E !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(3) { border-bottom-color: #1A73E8 !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(4) { border-bottom-color: #6264A7 !important; }
-    .st-key-cfg_infra_subtabs div[data-baseweb="tab-list"] button[aria-selected="true"]:nth-child(5) { border-bottom-color: #117A65 !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(1) p { color: #2C5F8A !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(2) p { color: #D2691E !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(3),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(3) p { color: #1A73E8 !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(4),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(4) p { color: #6264A7 !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(5),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(5) p { color: #8A6D3B !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(6),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(6) p { color: #117A65 !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(1) { border-bottom-color: #2C5F8A !important; background-color: rgba(44,95,138,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(2) { border-bottom-color: #D2691E !important; background-color: rgba(210,105,30,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(3) { border-bottom-color: #1A73E8 !important; background-color: rgba(26,115,232,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(4) { border-bottom-color: #6264A7 !important; background-color: rgba(98,100,167,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(5) { border-bottom-color: #8A6D3B !important; background-color: rgba(138,109,59,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(6) { border-bottom-color: #117A65 !important; background-color: rgba(17,122,101,0.08) !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -1159,8 +1176,8 @@ with tab_cfg:
 
     with infra_group:
         with st.container(key="cfg_infra_subtabs"):
-            k8s_tab, aws_tab, gcp_tab, azure_tab, inv_tab = st.tabs(
-                ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "📋 Cluster Inventory"])
+            k8s_tab, aws_tab, gcp_tab, azure_tab, onprem_tab, inv_tab = st.tabs(
+                ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "🏠 On-Premises", "📋 Cluster Inventory"])
 
         with k8s_tab:
             st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
@@ -1397,6 +1414,38 @@ with tab_cfg:
                 if st.button("Confirm remove", key="rm_az_confirm"):
                     del st.session_state.cloud_accounts[pick]
                     st.rerun()
+
+        with onprem_tab:
+            st.subheader("On-Premises / Self-Managed Clusters")
+            st.caption("No cloud IAM login step applies here — an on-prem or "
+                       "self-managed cluster (bare-metal, VMware, kubeadm, "
+                       "k3s, etc.) is reached the same way as any kubectl "
+                       "context: whatever cluster-issued client certificate, "
+                       "static token, or OIDC config is already in your "
+                       "kubeconfig. Set `provider` to `self-managed` and "
+                       "leave `account_nickname` blank on its Cluster "
+                       "Inventory row — 'Login all targets' will skip it "
+                       "and only 'Validate inventory contexts' applies.")
+
+            onprem_context = st.text_input(
+                "Context to test", placeholder="on-prem-cluster-context",
+                key="onprem_test_context",
+                help="Any context name already present in your local kubeconfig.")
+            if st.button("🔍 Test this context", key="onprem_test_btn"):
+                import subprocess
+                try:
+                    args = ["kubectl", "cluster-info"]
+                    if onprem_context.strip():
+                        args += ["--context", onprem_context.strip()]
+                    proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
+                    if proc.returncode == 0:
+                        st.success(f"Reachable — {(proc.stdout or '').strip()[:200]}")
+                    else:
+                        st.error((proc.stderr or proc.stdout or "unknown error")[:400])
+                except FileNotFoundError:
+                    st.error("kubectl not found on this host.")
+                except Exception as e:
+                    st.error(f"Test failed: {e}")
 
         with inv_tab:
             st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")
