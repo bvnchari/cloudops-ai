@@ -77,8 +77,21 @@ def _auto_load_jira_config():
     except Exception:
         pass
 
+def _auto_load_anthropic_key():
+    if st.session_state.anthropic_key:
+        return
+    try:
+        import os
+        key = (dict(st.secrets.get("anthropic", {})).get("api_key", "")
+              if hasattr(st, "secrets") else "") or os.environ.get("ANTHROPIC_API_KEY", "")
+        if key:
+            st.session_state.anthropic_key = key
+    except Exception:
+        pass
+
 _auto_load_sn_config()
 _auto_load_jira_config()
+_auto_load_anthropic_key()
 
 if st.session_state.data_source == "live" and st.session_state.live_result:
     result = st.session_state.live_result
@@ -496,7 +509,8 @@ with tab_change:
                     close_change(cr)
                     st.rerun()
 
-
+# ---------------- ITSM ----------------
+with tab_itsm:
     from core.reports import itsm_report_markdown
 
     pub = st.session_state.publish_result
