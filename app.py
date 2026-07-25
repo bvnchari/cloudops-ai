@@ -744,8 +744,11 @@ with tab_cfg:
                 help="Just the name from your instance URL — not the full https:// address.")
             user = st.text_input("Username", value=(cfg.user if cfg else ""),
                                  placeholder="cloudops.integration")
-            password = st.text_input("Password", type="password",
-                                     value=(cfg.password if cfg else ""))
+            password = st.text_input(
+                "Password", type="password",
+                placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.password) else "",
+                help="Never pre-filled for security — leave blank to keep the "
+                     "currently saved password unchanged.")
         with col_b:
             use_event_api = st.checkbox(
                 "Use ITOM Event Management API (em_event)",
@@ -760,16 +763,20 @@ with tab_cfg:
 
         with st.expander("OAuth2 (optional — leave blank for basic auth)"):
             client_id = st.text_input("Client ID", value=(cfg.client_id if cfg else ""))
-            client_secret = st.text_input("Client Secret", type="password",
-                                          value=(cfg.client_secret if cfg else ""))
+            client_secret = st.text_input(
+                "Client Secret", type="password",
+                placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.client_secret) else "",
+                help="Never pre-filled for security — leave blank to keep unchanged.")
 
         submitted = st.form_submit_button("💾 Save & Test Connection", type="primary")
 
     if submitted:
         from core.servicenow import SNConfig, EnterpriseServiceNowConnector, ServiceNowError
+        resolved_password = password or (cfg.password if cfg else "")
+        resolved_client_secret = client_secret or (cfg.client_secret if cfg else "")
         new_cfg = SNConfig(instance=instance.strip(), user=user.strip(),
-                           password=password, client_id=client_id.strip(),
-                           client_secret=client_secret, use_event_api=use_event_api,
+                           password=resolved_password, client_id=client_id.strip(),
+                           client_secret=resolved_client_secret, use_event_api=use_event_api,
                            timeout_s=float(timeout_s), max_retries=int(max_retries))
         problems = new_cfg.validate()
         if problems:
@@ -974,13 +981,17 @@ with tab_cfg:
             aws_key = st.text_input("AWS Access Key ID", disabled=aws_ambient)
             aws_secret = st.text_input("AWS Secret Access Key", type="password",
                                        disabled=aws_ambient)
-            gcp_key_json = gcp_project = ""
+            gcp_key_file = None
+            gcp_project = ""
             az_tenant = az_client = az_secret = az_sub = ""
         elif ca_provider == "gcp":
             gcp_project = st.text_input("GCP Project ID")
-            gcp_key_json = st.text_area(
-                "Service account key JSON (leave blank to use ambient "
-                "`gcloud` identity on this host)", height=100)
+            gcp_key_file = st.file_uploader(
+                "Service account key JSON (leave empty to use ambient "
+                "`gcloud` identity on this host)", type=["json"],
+                help="Uploaded as a file, never shown as visible/copyable text "
+                     "— read once at submit time and held only in this "
+                     "session's memory.")
             aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
             az_tenant = az_client = az_secret = az_sub = ""
         else:  # azure
@@ -991,7 +1002,8 @@ with tab_cfg:
                                       "use ambient managed identity on this host)")
             az_secret = st.text_input("Service Principal Client Secret", type="password")
             aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
-            gcp_key_json = gcp_project = ""
+            gcp_key_file = None
+            gcp_project = ""
 
         ca_submitted = st.form_submit_button("💾 Save & Test Cloud Account",
                                              type="primary")
@@ -1001,6 +1013,7 @@ with tab_cfg:
             st.error("Nickname is required.")
         else:
             from core.cloud_accounts import CloudAccount
+            gcp_key_json = gcp_key_file.getvalue().decode("utf-8") if gcp_key_file else ""
             new_acct = CloudAccount(
                 nickname=ca_nickname.strip(), provider=ca_provider,
                 aws_access_key_id=aws_key, aws_secret_access_key=aws_secret,
@@ -1124,9 +1137,11 @@ with tab_cfg:
                 placeholder="https://yourcompany.atlassian.net")
             jira_email = st.text_input("Atlassian account email",
                                        value=(jcfg.email if jcfg else ""))
-            jira_token = st.text_input("API token", type="password",
-                                       value=(jcfg.api_token if jcfg else ""),
-                                       help="Generate at id.atlassian.com -> API tokens.")
+            jira_token = st.text_input(
+                "API token", type="password",
+                placeholder="•••••••• (already set — leave blank to keep)" if (jcfg and jcfg.api_token) else "",
+                help="Generate at id.atlassian.com -> API tokens. Never "
+                     "pre-filled — leave blank to keep the saved token.")
         with j2:
             jira_project = st.text_input("Project key", value=(jcfg.project_key if jcfg else ""),
                                          placeholder="AIOPS")
@@ -1138,8 +1153,9 @@ with tab_cfg:
 
     if jira_submitted:
         from core.jira import JiraConfig, EnterpriseJiraConnector, JiraError
+        resolved_token = jira_token or (jcfg.api_token if jcfg else "")
         new_jcfg = JiraConfig(base_url=jira_url.strip().rstrip("/"), email=jira_email.strip(),
-                              api_token=jira_token, project_key=jira_project.strip(),
+                              api_token=resolved_token, project_key=jira_project.strip(),
                               issue_type=jira_issue_type.strip() or "Bug",
                               timeout_s=float(jira_timeout))
         problems = new_jcfg.validate()
@@ -1281,26 +1297,29 @@ with tab_cfg:
                "(no hallucination risk). With a key, Claude writes the executive "
                "summary and RCA narrative, still grounded in the same structured "
                "data.")
-    key_in = st.text_input("Anthropic API key (optional)", type="password",
-                           value=st.session_state.anthropic_key,
-                           placeholder="sk-ant-...",
-                           help="Session-scoped only — never stored or committed.")
+    key_in = st.text_input(
+        "Anthropic API key (optional)", type="password",
+        placeholder=("•••••••• (already set — leave blank to keep)"
+                    if st.session_state.anthropic_key else "sk-ant-..."),
+        help="Session-scoped only — never stored, committed, or pre-filled "
+             "back into this field for security.")
     model_in = st.selectbox(
         "Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
         index=0, help="Haiku is fastest and cheapest for short briefs.")
     kc1, kc2 = st.columns(2)
     if kc1.button("Enable LLM narratives"):
-        if not key_in.strip():
+        resolved_key = key_in.strip() or st.session_state.anthropic_key
+        if not resolved_key:
             st.error("Enter a key first.")
         else:
             from core.ai_agent import AIIncidentAnalyst
             with st.spinner("Testing key and regenerating briefs..."):
                 analyst = AIIncidentAnalyst(result["topology"],
-                                            api_key=key_in.strip(),
+                                            api_key=resolved_key,
                                             model=model_in)
                 new_briefs = analyst.analyze_all(result["incidents"])
                 if new_briefs and new_briefs[0].backend == "llm":
-                    st.session_state.anthropic_key = key_in.strip()
+                    st.session_state.anthropic_key = resolved_key
                     result["briefs"] = new_briefs
                     st.success("LLM narratives enabled — see the 🤖 AI Analyst tab.")
                 else:
