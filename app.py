@@ -766,41 +766,118 @@ with tab_reports:
                             gaps=gaps, hotspots=hotspots)
 
     st.markdown("### 1️⃣ Generate a report")
-    c1, c2 = st.columns(2)
-    period_choice = c1.selectbox(
-        "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
-        index=1, key="rep_period_choice")
-    custom_days = None
-    if period_choice == "custom":
-        custom_days = c2.number_input("Custom period (days)", 1, 365, 14, key="rep_custom_days")
-    else:
-        _std_days = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90}[period_choice]
-        c2.caption(f"Standard window: **{_std_days} days**")
 
-    if st.button("🔄 Build report bundle", key="rep_build_btn"):
-        st.session_state["rep_bundle"] = _build_current_bundle(period_choice, custom_days)
+    REPORT_TYPES = {
+        "Full Reliability Report": "bundle",
+        "Executive Briefing": "markdown",
+        "Incident Postmortem": "markdown",
+        "SLA Compliance": "bundle",
+        "Alert Funnel / Noise": "bundle",
+    }
+    report_choice = st.selectbox(
+        "Report type", list(REPORT_TYPES.keys()), key="rep_type_choice",
+        help="Pick which report to build, then export it below.")
+    report_kind = REPORT_TYPES[report_choice]
+    _STD_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90}
 
-    bundle = st.session_state.get("rep_bundle")
-    if bundle:
-        st.success(f"Bundle ready — {bundle.period.label} ({bundle.period.range_str})")
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            if st.button("📄 Generate PDF", key="rep_gen_pdf"):
-                pdf_path = export_pdf(bundle, "/tmp/cloudops_report.pdf")
-                with open(pdf_path, "rb") as f:
-                    st.download_button("⬇️ Download PDF", f, file_name="CloudOps-AI_Report.pdf",
-                                       mime="application/pdf", key="rep_dl_pdf")
-        with dl2:
-            if st.button("📊 Generate Excel", key="rep_gen_xlsx"):
-                xlsx_path = export_excel(bundle, "/tmp/cloudops_report.xlsx")
-                with open(xlsx_path, "rb") as f:
-                    st.download_button("⬇️ Download Excel", f,
-                                       file_name="CloudOps-AI_Report.xlsx",
-                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                       key="rep_dl_xlsx")
+    def _filtered_bundle(period_type: str, custom_days: int | None,
+                         only: str | None = None):
+        """Builds the full bundle, then optionally blanks out every section
+        except `only` (one of 'sla', 'funnel') so export_pdf/export_excel
+        render a single-topic report using the same renderers."""
+        b = _build_current_bundle(period_type, custom_days)
+        if only == "sla":
+            b.slo_statuses, b.scorecard, b.gaps, b.hotspots = [], [], [], []
+        elif only == "funnel":
+            b.slo_statuses, b.sla_statuses, b.scorecard, b.gaps = [], [], [], []
+        return b
+
+    if report_choice == "Incident Postmortem":
+        if not incidents:
+            st.info("No incidents in the current dataset to report on.")
+        else:
+            inc_pick = st.selectbox(
+                "Incident", incidents, key="rep_inc_pick",
+                format_func=lambda i: f"{i.incident_id} · {i.title}")
+            if st.button("🔄 Build postmortem", key="rep_build_pm"):
+                from core.reports import postmortem_markdown
+                briefs_by_id = {b.incident_id: b for b in result.get("briefs", [])}
+                rem_by_id = {r.incident_id: r for r in result.get("remediations", [])}
+                st.session_state["rep_markdown"] = postmortem_markdown(
+                    inc_pick, brief=briefs_by_id.get(inc_pick.incident_id),
+                    remediation=rem_by_id.get(inc_pick.incident_id),
+                    topology=result["topology"])
+                st.session_state["rep_markdown_name"] = f"postmortem_{inc_pick.incident_id}.md"
+
+    elif report_choice == "Executive Briefing":
+        c1, c2 = st.columns(2)
+        period_choice = c1.selectbox(
+            "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
+            index=1, key="rep_period_choice_exec")
+        custom_days = None
+        if period_choice == "custom":
+            custom_days = c2.number_input("Custom period (days)", 1, 365, 14,
+                                          key="rep_custom_days_exec")
+        else:
+            c2.caption(f"Standard window: **{_STD_DAYS[period_choice]} days**")
+        if st.button("🔄 Build executive briefing", key="rep_build_exec"):
+            from core.reports import exec_report_markdown
+            b = _build_current_bundle(period_choice, custom_days)
+            st.session_state["rep_markdown"] = exec_report_markdown(
+                b.kpi, b.stats, b.slo_statuses, b.scorecard, b.gaps,
+                hotspots=b.hotspots, period_label=b.period.label)
+            st.session_state["rep_markdown_name"] = "CloudOps-AI_Executive_Briefing.md"
+
+    else:  # bundle-backed: Full Reliability Report, SLA Compliance, Alert Funnel / Noise
+        c1, c2 = st.columns(2)
+        period_choice = c1.selectbox(
+            "Report period", ["daily", "weekly", "monthly", "quarterly", "custom"],
+            index=1, key="rep_period_choice")
+        custom_days = None
+        if period_choice == "custom":
+            custom_days = c2.number_input("Custom period (days)", 1, 365, 14, key="rep_custom_days")
+        else:
+            c2.caption(f"Standard window: **{_STD_DAYS[period_choice]} days**")
+
+        _only = {"SLA Compliance": "sla", "Alert Funnel / Noise": "funnel"}.get(report_choice)
+        if st.button("🔄 Build report bundle", key="rep_build_btn"):
+            st.session_state["rep_bundle"] = _filtered_bundle(period_choice, custom_days, only=_only)
+            st.session_state["rep_markdown"] = None
+
+    # ---- Downloads ----
+    if report_kind == "markdown":
+        md = st.session_state.get("rep_markdown")
+        if md:
+            st.success("Report ready.")
+            st.download_button("⬇️ Download Markdown", md,
+                               file_name=st.session_state.get("rep_markdown_name", "report.md"),
+                               mime="text/markdown", key="rep_dl_md")
+            with st.expander("Preview"):
+                st.markdown(md)
+        else:
+            st.info("Click **Build** above to generate this report.")
     else:
-        st.info("Click **Build report bundle** to compute KPIs/SLO/SLA/scorecard "
-                "for the selected period, then export.")
+        bundle = st.session_state.get("rep_bundle")
+        if bundle:
+            st.success(f"Bundle ready — {bundle.period.label} ({bundle.period.range_str})")
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                if st.button("📄 Generate PDF", key="rep_gen_pdf"):
+                    pdf_path = export_pdf(bundle, "/tmp/cloudops_report.pdf")
+                    with open(pdf_path, "rb") as f:
+                        st.download_button("⬇️ Download PDF", f, file_name="CloudOps-AI_Report.pdf",
+                                           mime="application/pdf", key="rep_dl_pdf")
+            with dl2:
+                if st.button("📊 Generate Excel", key="rep_gen_xlsx"):
+                    xlsx_path = export_excel(bundle, "/tmp/cloudops_report.xlsx")
+                    with open(xlsx_path, "rb") as f:
+                        st.download_button("⬇️ Download Excel", f,
+                                           file_name="CloudOps-AI_Report.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           key="rep_dl_xlsx")
+        else:
+            st.info("Click **Build report bundle** to compute the data for the "
+                    "selected period, then export.")
 
     st.divider()
 
