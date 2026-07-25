@@ -754,6 +754,7 @@ with tab_cfg:
         if st.button("🚀 Publish to ServiceNow", type="primary"):
             from core.itsm import ITSMBridge
             from core.publisher import publish_incidents
+            from core.servicenow import EnterpriseServiceNowConnector
             bar = st.progress(0.0, text="Starting...")
 
             def on_progress(done, total, label):
@@ -774,6 +775,20 @@ with tab_cfg:
                 else:
                     st.warning(f"Completed with issues: {pub_result.created} created, "
                                f"{len(pub_result.errors)} error(s). See the 🎫 ITSM tab.")
+                # Auto-refresh: if we're in live mode, re-pull CMDB/alerts now so
+                # the just-published tickets and any lifecycle updates show up
+                # immediately, instead of requiring a second manual pull.
+                if st.session_state.data_source == "live":
+                    with st.spinner("Refreshing live data from ServiceNow..."):
+                        try:
+                            from pipeline import run_pipeline_live
+                            refreshed = run_pipeline_live(
+                                EnterpriseServiceNowConnector(st.session_state.sn_config),
+                                verbose=False,
+                                api_key=st.session_state.anthropic_key or None)
+                            st.session_state.live_result = refreshed
+                        except Exception:
+                            pass  # publish already succeeded; a stale pull just means click again
                 st.rerun()
             except Exception as e:
                 bar.empty()
