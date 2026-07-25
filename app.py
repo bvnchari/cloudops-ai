@@ -236,6 +236,8 @@ with tab_rem:
 
 # ---------------- ITSM ----------------
 with tab_itsm:
+    from core.reports import itsm_report_markdown
+
     pub = st.session_state.publish_result
     if pub and pub.tickets:
         st.subheader("ServiceNow Tickets — LIVE")
@@ -249,16 +251,112 @@ with tab_itsm:
                 "the **⚙️ Config** tab to publish these incidents for real.")
         tickets = result["tickets"]
 
-    st.dataframe(pd.DataFrame([{
-        "Number": t.number, "State": t.state, "Impact": t.impact,
-        "Urgency": t.urgency, "Service": t.business_service,
-        "CMDB CI": t.cmdb_ci, "Short Description": t.short_description,
-    } for t in tickets]), use_container_width=True, hide_index=True)
+    SLA_HOURS = {"1": 1.0, "2": 4.0, "3": 8.0}
+    _now = datetime.now(timezone.utc).timestamp()
+
+    def _elapsed_min(t) -> float:
+        return ((t.resolved_at or _now) - t.opened_at) / 60
+
+    def _is_breach(t) -> bool:
+        return _elapsed_min(t) / 60 > SLA_HOURS.get(t.impact, 8.0)
+
+    # ---- KPI strip ----
+    open_n = sum(1 for t in tickets if t.state != "Resolved")
+    resolved = [t for t in tickets if t.state == "Resolved" and t.resolved_at]
+    mttr = (sum((t.resolved_at - t.opened_at) / 60 for t in resolved)
+           / len(resolved)) if resolved else None
+    breaches = [t for t in tickets if _is_breach(t)]
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Total tickets", len(tickets))
+    k2.metric("Open", open_n)
+    k3.metric("Resolved", len(tickets) - open_n)
+    k4.metric("MTTR", f"{mttr:.0f} min" if mttr is not None else "—")
+    k5.metric("SLA breaches", len(breaches),
+             delta=None if not breaches else f"-{len(breaches)}",
+             delta_color="inverse")
+
+    st.divider()
+
+    # ---- Filters ----
+    f1, f2, f3, f4 = st.columns(4)
+    states = sorted({t.state for t in tickets})
+    impacts = sorted({t.impact for t in tickets})
+    services = sorted({t.business_service or "Unmapped" for t in tickets})
+    f_state = f1.multiselect("State", states, default=states)
+    f_impact = f2.multiselect("Impact", impacts, default=impacts,
+                              format_func=lambda i: f"P{i}")
+    f_service = f3.multiselect("Business service", services, default=services)
+    f_search = f4.text_input("Search (number/description)", "")
+
+    filtered = [
+        t for t in tickets
+        if t.state in f_state and t.impact in f_impact
+        and (t.business_service or "Unmapped") in f_service
+        and (f_search.lower() in t.number.lower()
+             or f_search.lower() in t.short_description.lower())
+    ]
+    st.caption(f"Showing {len(filtered)} of {len(tickets)} tickets.")
+
+    rows = []
+    for t in filtered:
+        rows.append({
+            "Number": t.number, "State": t.state, "Impact": f"P{t.impact}",
+            "Urgency": t.urgency, "Service": t.business_service or "Unmapped",
+            "CMDB CI": t.cmdb_ci, "Short Description": t.short_description,
+            "Elapsed/Resolution (min)": round(_elapsed_min(t)),
+            "SLA": "🔴 Breach" if _is_breach(t) else "🟢 On track",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ---- Cross-linked ticket detail (ties back to the correlated Incident) ----
+    incidents_by_id = {i.incident_id: i for i in incidents}
+    with st.expander(f"🔍 Ticket detail & incident cross-link ({len(filtered)} tickets)"):
+        for t in filtered:
+            inc = incidents_by_id.get(t.incident_id)
+            st.markdown(f"**{t.number}** · {t.short_description}")
+            c1, c2, c3 = st.columns(3)
+            c1.caption(f"State: **{t.state}** · Impact **P{t.impact}** / "
+                      f"Urgency **{t.urgency}**")
+            c2.caption(f"Service: **{t.business_service or 'Unmapped'}** · "
+                      f"CI: **{t.cmdb_ci or '—'}**")
+            c3.caption(f"SLA: {'🔴 Breach' if _is_breach(t) else '🟢 On track'} "
+                      f"({_elapsed_min(t):.0f} min)")
+            if inc:
+                st.caption(f"↳ Linked incident **{inc.incident_id}** · root cause "
+                          f"**{inc.probable_root_cause or 'not determined'}** · "
+                          f"{inc.raw_alert_count} alerts correlated")
+            if t.close_notes:
+                st.caption(f"Close notes: {t.close_notes}")
+            st.divider()
 
     if pub and pub.errors:
         with st.expander(f"⚠️ {len(pub.errors)} error(s) during publish"):
             for stage, detail in pub.errors:
                 st.error(f"**{stage}** — {detail}")
+
+    st.divider()
+
+    # ---- Bulk export + report generation (interlinked with Reports & Delivery) ----
+    st.markdown("### 📦 Export & reporting")
+    e1, e2 = st.columns(2)
+    with e1:
+        csv_data = pd.DataFrame(rows).to_csv(index=False)
+        st.download_button("⬇️ Download filtered tickets (CSV)", csv_data,
+                           file_name="cloudops_itsm_tickets.csv", mime="text/csv",
+                           key="itsm_dl_csv")
+    with e2:
+        if st.button("📤 Generate ITSM Ticket Summary report", key="itsm_gen_report"):
+            md = itsm_report_markdown(filtered or tickets, period_label="current window",
+                                      sla_hours=SLA_HOURS)
+            st.session_state["rep_markdown"] = md
+            st.session_state["rep_markdown_name"] = "CloudOps-AI_ITSM_Ticket_Summary.md"
+            st.session_state["rep_type_choice"] = "ITSM Ticket Summary"
+            st.success("Report built — download it right here, or open "
+                       "**📤 Reports & Delivery** where it's already loaded.")
+            st.download_button("⬇️ Download Markdown", md,
+                               file_name="CloudOps-AI_ITSM_Ticket_Summary.md",
+                               mime="text/markdown", key="itsm_dl_md")
 
 # ---------------- AI Analyst ----------------
 with tab_ai:
@@ -875,10 +973,13 @@ with tab_reports:
         "Incident Postmortem": "markdown",
         "SLA Compliance": "bundle",
         "Alert Funnel / Noise": "bundle",
+        "ITSM Ticket Summary": "markdown",
     }
     report_choice = st.selectbox(
         "Report type", list(REPORT_TYPES.keys()), key="rep_type_choice",
-        help="Pick which report to build, then export it below.")
+        help="Pick which report to build, then export it below. Tickets and "
+             "incidents feed this from the same data as the ITSM and On-Call "
+             "tabs — building it there loads it here automatically too.")
     report_kind = REPORT_TYPES[report_choice]
     _STD_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 90}
 
@@ -944,6 +1045,16 @@ with tab_reports:
                 b.kpi, b.stats, b.slo_statuses, b.scorecard, b.gaps,
                 hotspots=b.hotspots, period_label=b.period.label)
             st.session_state["rep_markdown_name"] = "CloudOps-AI_Executive_Briefing.md"
+
+    elif report_choice == "ITSM Ticket Summary":
+        _pub = st.session_state.publish_result
+        _tickets = _pub.tickets if (_pub and _pub.tickets) else result["tickets"]
+        st.caption(f"{len(_tickets)} ticket(s) currently loaded "
+                  f"({'LIVE ServiceNow' if _pub and _pub.tickets else 'simulated'}).")
+        if st.button("🔄 Build ITSM ticket summary", key="rep_build_itsm"):
+            from core.reports import itsm_report_markdown
+            st.session_state["rep_markdown"] = itsm_report_markdown(_tickets)
+            st.session_state["rep_markdown_name"] = "CloudOps-AI_ITSM_Ticket_Summary.md"
 
     else:  # bundle-backed: Full Reliability Report, SLA Compliance, Alert Funnel / Noise
         period_choice, c_start, c_end = _period_picker("rep")
