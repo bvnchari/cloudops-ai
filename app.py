@@ -934,6 +934,94 @@ with tab_cfg:
         st.session_state.k8s_executor_config = None
         st.rerun()
 
+    st.markdown("#### ☁️ Cloud Accounts (Method 2 — registered connections)")
+    st.caption("Same pattern as ServiceNow/Jira above: register each AWS "
+               "account / GCP project / Azure subscription **once**, with "
+               "its own dedicated automation identity, then reference it by "
+               "nickname from as many cluster-inventory rows as you need — "
+               "no repeating credentials per cluster. This is what actually "
+               "performs cloud login (`aws eks update-kubeconfig`, `gcloud "
+               "... get-credentials`, `az aks get-credentials`) on demand, "
+               "instead of requiring the kubeconfig context to already "
+               "exist. **Requires the matching CLI (`aws`/`gcloud`/`az`) "
+               "installed wherever this app is actually running** — "
+               "self-hosted/Docker, not Streamlit Community Cloud's sandbox.")
+
+    st.session_state.setdefault("cloud_accounts", {})
+    accts = st.session_state.cloud_accounts
+    if accts:
+        st.dataframe(pd.DataFrame([
+            {"Nickname": n, "Provider": a.provider,
+             "Detail": (a.aws_region if a.provider == "aws" else
+                       a.gcp_project if a.provider == "gcp" else
+                       a.azure_subscription_id)}
+            for n, a in accts.items()
+        ]), use_container_width=True, hide_index=True)
+
+    with st.form("cloud_account_form"):
+        ca1, ca2 = st.columns(2)
+        with ca1:
+            ca_nickname = st.text_input("Nickname", placeholder="prod-aws")
+            ca_provider = st.selectbox("Provider", ["aws", "gcp", "azure"])
+        with ca2:
+            st.caption("Provider-specific fields appear below based on selection.")
+
+        if ca_provider == "aws":
+            aa1, aa2 = st.columns(2)
+            aws_ambient = aa1.checkbox("Use this host's own IAM identity "
+                                       "(instance/task role) instead of static keys")
+            aws_region = aa2.text_input("Default region", placeholder="us-east-1")
+            aws_key = st.text_input("AWS Access Key ID", disabled=aws_ambient)
+            aws_secret = st.text_input("AWS Secret Access Key", type="password",
+                                       disabled=aws_ambient)
+            gcp_key_json = gcp_project = ""
+            az_tenant = az_client = az_secret = az_sub = ""
+        elif ca_provider == "gcp":
+            gcp_project = st.text_input("GCP Project ID")
+            gcp_key_json = st.text_area(
+                "Service account key JSON (leave blank to use ambient "
+                "`gcloud` identity on this host)", height=100)
+            aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
+            az_tenant = az_client = az_secret = az_sub = ""
+        else:  # azure
+            az1, az2 = st.columns(2)
+            az_tenant = az1.text_input("Tenant ID")
+            az_sub = az2.text_input("Subscription ID")
+            az_client = st.text_input("Service Principal Client ID (blank = "
+                                      "use ambient managed identity on this host)")
+            az_secret = st.text_input("Service Principal Client Secret", type="password")
+            aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
+            gcp_key_json = gcp_project = ""
+
+        ca_submitted = st.form_submit_button("💾 Save & Test Cloud Account",
+                                             type="primary")
+
+    if ca_submitted:
+        if not ca_nickname.strip():
+            st.error("Nickname is required.")
+        else:
+            from core.cloud_accounts import CloudAccount
+            new_acct = CloudAccount(
+                nickname=ca_nickname.strip(), provider=ca_provider,
+                aws_access_key_id=aws_key, aws_secret_access_key=aws_secret,
+                aws_region=aws_region, aws_use_ambient_identity=aws_ambient,
+                gcp_service_account_key_json=gcp_key_json, gcp_project=gcp_project,
+                azure_tenant_id=az_tenant, azure_client_id=az_client,
+                azure_client_secret=az_secret, azure_subscription_id=az_sub,
+            )
+            with st.spinner(f"Testing {ca_provider} identity..."):
+                try:
+                    info = new_acct.test_connection()
+                    st.session_state.cloud_accounts[new_acct.nickname] = new_acct
+                    st.success(f"Connected — {info['detail'][:150]}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Connection failed: {e}")
+
+    if accts and st.button("Clear all Cloud Accounts"):
+        st.session_state.cloud_accounts = {}
+        st.rerun()
+
     st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")
     st.caption("Maps each incident's root-cause CI or business service to the "
                "**specific** cluster/namespace/kubeconfig context it belongs "
@@ -965,7 +1053,7 @@ with tab_cfg:
 
     if inv_records:
         st.dataframe(pd.DataFrame(inv_records), use_container_width=True, hide_index=True)
-        vc1, vc2 = st.columns(2)
+        vc1, vc2, vc3 = st.columns(3)
         with vc1:
             if st.button("🔍 Validate inventory contexts"):
                 import subprocess
@@ -978,7 +1066,8 @@ with tab_cfg:
                         st.warning(f"{len(missing)} row(s) reference a kube_context not "
                                   f"found locally: {', '.join(missing)}. Run the matching "
                                   f"`aws eks update-kubeconfig` / `gcloud ... get-credentials` "
-                                  f"/ `az aks get-credentials` first.")
+                                  f"/ `az aks get-credentials` first, or use 'Login all "
+                                  f"targets' below if a Cloud Account is registered.")
                     else:
                         st.success(f"All {len(inv_records)} kube_context(s) found locally.")
                 except FileNotFoundError:
@@ -986,6 +1075,22 @@ with tab_cfg:
                 except Exception as e:
                     st.error(f"Validation failed: {e}")
         with vc2:
+            if st.button("🔑 Login all targets (Method 2)",
+                        help="Uses each row's account_nickname to look up a "
+                             "registered Cloud Account and actually perform "
+                             "cloud login for that cluster."):
+                from core.cluster_inventory import ClusterInventory
+                from core.cloud_accounts import CloudAccountRegistry
+                inv = ClusterInventory.from_records(inv_records)
+                registry = CloudAccountRegistry(list(st.session_state.get("cloud_accounts", {}).values()))
+                with st.spinner("Logging into each cluster target..."):
+                    results = registry.login_all(inv.targets)
+                n_ok = sum(1 for _, ok, _ in results if ok)
+                st.success(f"{n_ok}/{len(results)} logged in successfully.") if n_ok == len(results) \
+                    else st.warning(f"{n_ok}/{len(results)} logged in successfully.")
+                for match, ok, msg in results:
+                    (st.success if ok else st.error)(f"{match}: {msg}")
+        with vc3:
             if st.button("Clear inventory"):
                 st.session_state.cluster_inventory_records = None
                 st.rerun()

@@ -44,13 +44,14 @@ from dataclasses import dataclass, field
 class ClusterTarget:
     match: str                  # CI name, business_service, or prefix+"*" pattern
     provider: str                # "aws" | "gcp" | "azure" | "self-managed"
-    account_id: str               # AWS account / GCP project / Azure subscription
+    account_id: str               # AWS account / GCP project / Azure resource group
     region: str
     cluster_name: str
     namespace: str
-    kube_context: str            # kubeconfig context name (must already exist locally)
-    iam_role_arn: str = ""        # AWS: role assumed to reach this cluster (documentation/audit only)
-    service_account: str = ""     # GCP: automation service account used (documentation/audit only)
+    kube_context: str            # kubeconfig context name (created/refreshed by login, or must pre-exist)
+    account_nickname: str = ""    # links to a registered core.cloud_accounts.CloudAccount (Method 2)
+    iam_role_arn: str = ""        # AWS: role assumed to reach this cluster
+    service_account: str = ""     # GCP: automation service account used (impersonation target)
     managed_identity: str = ""    # Azure: managed identity / SP used (documentation/audit only)
     notes: str = ""
 
@@ -92,6 +93,7 @@ class ClusterInventory:
                 cluster_name=row.get("cluster_name", "").strip(),
                 namespace=row.get("namespace", "default").strip(),
                 kube_context=row.get("kube_context", "").strip(),
+                account_nickname=row.get("account_nickname", "").strip(),
                 iam_role_arn=row.get("iam_role_arn", "").strip(),
                 service_account=row.get("service_account", "").strip(),
                 managed_identity=row.get("managed_identity", "").strip(),
@@ -105,7 +107,8 @@ class ClusterInventory:
             match=r.get("match", ""), provider=r.get("provider", "self-managed"),
             account_id=r.get("account_id", ""), region=r.get("region", ""),
             cluster_name=r.get("cluster_name", ""), namespace=r.get("namespace", "default"),
-            kube_context=r.get("kube_context", ""), iam_role_arn=r.get("iam_role_arn", ""),
+            kube_context=r.get("kube_context", ""), account_nickname=r.get("account_nickname", ""),
+            iam_role_arn=r.get("iam_role_arn", ""),
             service_account=r.get("service_account", ""),
             managed_identity=r.get("managed_identity", ""), notes=r.get("notes", ""),
         ) for r in records])
@@ -116,13 +119,15 @@ class ClusterInventory:
 
 CSV_TEMPLATE = (
     "match,provider,account_id,region,cluster_name,namespace,kube_context,"
-    "iam_role_arn,service_account,managed_identity,notes\n"
+    "account_nickname,iam_role_arn,service_account,managed_identity,notes\n"
     "payments-api-*,aws,123456789012,us-east-1,prod-payments-eks,payments,"
-    "arn:aws:eks:us-east-1:123456789012:cluster/prod-payments-eks,"
+    "prod-payments-eks,prod-aws,"
     "arn:aws:iam::123456789012:role/cloudops-ai-automation,,,"
-    "Least-privilege automation role, RBAC-scoped to 'payments' namespace\n"
+    "Method 1: kube_context must pre-exist OR Method 2: leave kube_context "
+    "as the desired alias and set account_nickname to a registered Cloud "
+    "Account to log in on demand\n"
     "checkout-*,gcp,my-gcp-project,us-central1,checkout-gke,checkout,"
-    "gke_my-gcp-project_us-central1_checkout-gke,,"
+    "checkout-gke,checkout-gcp,,"
     "cloudops-ai-automation@my-gcp-project.iam.gserviceaccount.com,,"
     "roles/container.developer scoped via GKE RBAC\n"
 )
