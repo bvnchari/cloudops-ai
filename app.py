@@ -725,623 +725,725 @@ with tab_ai:
 
 # ---------------- Config ----------------
 with tab_cfg:
-    st.subheader("ServiceNow Connection")
+    st.header("⚙️ Configuration")
+    st.caption("Connections (ServiceNow, Jira, LLM) authenticate CloudOps-AI "
+               "to external SaaS systems. Infrastructure & Execution "
+               "(Kubernetes, AWS, GCP, Azure) is what actually lets "
+               "Remediation and Change Mgmt execute and verify real fixes — "
+               "see each provider's tab for its own Save & Test.")
 
-    cfg = st.session_state.sn_config
-    if cfg:
-        st.success(f"Configured: **{cfg.instance}** · "
-                   f"auth: {'OAuth2' if cfg.uses_oauth else 'Basic'} · "
-                   f"{'Event API (em_event)' if cfg.use_event_api else 'Table API (incident)'}")
-    else:
-        st.warning("Not configured — the platform is running against the in-memory mock.")
+    conn_group, infra_group = st.tabs(["🔌 Connections", "🏗️ Infrastructure & Execution"])
 
-    with st.form("sn_config_form"):
-        col_a, col_b = st.columns(2)
-        with col_a:
-            instance = st.text_input(
-                "Instance name", value=(cfg.instance if cfg else ""),
-                placeholder="dev123456",
-                help="Just the name from your instance URL — not the full https:// address.")
-            user = st.text_input("Username", value=(cfg.user if cfg else ""),
-                                 placeholder="cloudops.integration")
-            password = st.text_input(
-                "Password", type="password",
-                placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.password) else "",
-                help="Never pre-filled for security — leave blank to keep the "
-                     "currently saved password unchanged.")
-        with col_b:
-            use_event_api = st.checkbox(
-                "Use ITOM Event Management API (em_event)",
-                value=(cfg.use_event_api if cfg else False),
-                help="Publishes events with dedup keys and lets ServiceNow's own "
-                     "event rules correlate. Requires the Event Management plugin "
-                     "— NOT available on free Personal Developer Instances.")
-            timeout_s = st.number_input("Timeout (seconds)", 5.0, 120.0,
-                                        value=(cfg.timeout_s if cfg else 15.0), step=5.0)
-            max_retries = st.number_input("Max retries", 1, 6,
-                                          value=(cfg.max_retries if cfg else 3))
+    with conn_group:
+        sn_tab, jira_tab, llm_tab = st.tabs(["🎫 ServiceNow", "🔧 Jira", "🤖 LLM (Anthropic)"])
 
-        with st.expander("OAuth2 (optional — leave blank for basic auth)"):
-            client_id = st.text_input("Client ID", value=(cfg.client_id if cfg else ""))
-            client_secret = st.text_input(
-                "Client Secret", type="password",
-                placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.client_secret) else "",
-                help="Never pre-filled for security — leave blank to keep unchanged.")
+        with sn_tab:
+            st.subheader("ServiceNow Connection")
 
-        submitted = st.form_submit_button("💾 Save & Test Connection", type="primary")
+            cfg = st.session_state.sn_config
+            if cfg:
+                st.success(f"Configured: **{cfg.instance}** · "
+                           f"auth: {'OAuth2' if cfg.uses_oauth else 'Basic'} · "
+                           f"{'Event API (em_event)' if cfg.use_event_api else 'Table API (incident)'}")
+            else:
+                st.warning("Not configured — the platform is running against the in-memory mock.")
 
-    if submitted:
-        from core.servicenow import SNConfig, EnterpriseServiceNowConnector, ServiceNowError
-        resolved_password = password or (cfg.password if cfg else "")
-        resolved_client_secret = client_secret or (cfg.client_secret if cfg else "")
-        new_cfg = SNConfig(instance=instance.strip(), user=user.strip(),
-                           password=resolved_password, client_id=client_id.strip(),
-                           client_secret=resolved_client_secret, use_event_api=use_event_api,
-                           timeout_s=float(timeout_s), max_retries=int(max_retries))
-        problems = new_cfg.validate()
-        if problems:
-            for p in problems:
-                st.error(p)
-        else:
-            with st.spinner("Testing connection..."):
-                try:
-                    info = EnterpriseServiceNowConnector(new_cfg).test_connection()
-                    st.session_state.sn_config = new_cfg
-                    st.session_state.sn_status = info
-                    st.success(f"Connected to {info['instance']} "
-                               f"(auth: {info['auth']}). Configuration saved for "
-                               f"this session.")
-                    st.rerun()
-                except ServiceNowError as e:
-                    st.session_state.sn_status = None
-                    st.error(f"Connection failed: {e}")
-                    st.caption("Common causes: instance hibernating (wake it at "
-                               "developer.servicenow.com), wrong instance name, "
-                               "bad credentials, or the user lacks the itil role.")
-                except Exception as e:
-                    st.error(f"Unexpected error: {e}")
+            with st.form("sn_config_form"):
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    instance = st.text_input(
+                        "Instance name", value=(cfg.instance if cfg else ""),
+                        placeholder="dev123456",
+                        help="Just the name from your instance URL — not the full https:// address.")
+                    user = st.text_input("Username", value=(cfg.user if cfg else ""),
+                                         placeholder="cloudops.integration")
+                    password = st.text_input(
+                        "Password", type="password",
+                        placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.password) else "",
+                        help="Never pre-filled for security — leave blank to keep the "
+                             "currently saved password unchanged.")
+                with col_b:
+                    use_event_api = st.checkbox(
+                        "Use ITOM Event Management API (em_event)",
+                        value=(cfg.use_event_api if cfg else False),
+                        help="Publishes events with dedup keys and lets ServiceNow's own "
+                             "event rules correlate. Requires the Event Management plugin "
+                             "— NOT available on free Personal Developer Instances.")
+                    timeout_s = st.number_input("Timeout (seconds)", 5.0, 120.0,
+                                                value=(cfg.timeout_s if cfg else 15.0), step=5.0)
+                    max_retries = st.number_input("Max retries", 1, 6,
+                                                  value=(cfg.max_retries if cfg else 3))
 
-    st.divider()
-    st.subheader("Publish Incidents to ServiceNow")
+                with st.expander("OAuth2 (optional — leave blank for basic auth)"):
+                    client_id = st.text_input("Client ID", value=(cfg.client_id if cfg else ""))
+                    client_secret = st.text_input(
+                        "Client Secret", type="password",
+                        placeholder="•••••••• (already set — leave blank to keep)" if (cfg and cfg.client_secret) else "",
+                        help="Never pre-filled for security — leave blank to keep unchanged.")
 
-    if not st.session_state.sn_config:
-        st.info("Save a working connection above to enable publishing.")
-    else:
-        c1, c2, c3 = st.columns(3)
-        do_cmdb = c1.checkbox("Sync CMDB", value=True,
-                              help="Idempotent upsert of topology CIs — safe to re-run.")
-        do_close = c2.checkbox("Auto-close remediated", value=True)
-        do_lifecycle = c3.checkbox("Read back lifecycle for real MTTR", value=True)
+                submitted = st.form_submit_button("💾 Save & Test Connection", type="primary")
 
-        st.caption(f"Ready to publish **{len(incidents)} incident(s)** and "
-                   f"**{len(result['topology'].cis)} CI(s)** to "
-                   f"`{st.session_state.sn_config.instance}`.")
-
-        if st.button("🚀 Publish to ServiceNow", type="primary"):
-            from core.itsm import ITSMBridge
-            from core.publisher import publish_incidents
-            from core.servicenow import EnterpriseServiceNowConnector
-            bar = st.progress(0.0, text="Starting...")
-
-            def on_progress(done, total, label):
-                bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
-
-            try:
-                bridge = ITSMBridge(sn_config=st.session_state.sn_config)
-                pub_result = publish_incidents(
-                    bridge, incidents, topology=result["topology"],
-                    sync_cmdb=do_cmdb, close_resolved=do_close,
-                    fetch_lifecycle=do_lifecycle, progress_cb=on_progress)
-                st.session_state.publish_result = pub_result
-                bar.empty()
-                if pub_result.ok:
-                    st.success(f"Published {pub_result.created} tickets "
-                               f"({pub_result.auto_closed} auto-closed) in "
-                               f"{pub_result.duration_s}s. See the 🎫 Incidents tab.")
+            if submitted:
+                from core.servicenow import SNConfig, EnterpriseServiceNowConnector, ServiceNowError
+                resolved_password = password or (cfg.password if cfg else "")
+                resolved_client_secret = client_secret or (cfg.client_secret if cfg else "")
+                new_cfg = SNConfig(instance=instance.strip(), user=user.strip(),
+                                   password=resolved_password, client_id=client_id.strip(),
+                                   client_secret=resolved_client_secret, use_event_api=use_event_api,
+                                   timeout_s=float(timeout_s), max_retries=int(max_retries))
+                problems = new_cfg.validate()
+                if problems:
+                    for p in problems:
+                        st.error(p)
                 else:
-                    st.warning(f"Completed with issues: {pub_result.created} created, "
-                               f"{len(pub_result.errors)} error(s). See the 🎫 Incidents tab.")
-                # Auto-refresh: if we're in live mode, re-pull CMDB/alerts now so
-                # the just-published tickets and any lifecycle updates show up
-                # immediately, instead of requiring a second manual pull.
-                if st.session_state.data_source == "live":
-                    with st.spinner("Refreshing live data from ServiceNow..."):
+                    with st.spinner("Testing connection..."):
                         try:
-                            from pipeline import run_pipeline_live
-                            k8s_cfg = st.session_state.get("k8s_executor_config")
-                            live_exec = None
-                            if k8s_cfg:
-                                from core.k8s_executor import KubernetesExecutor
-                                from core.cluster_inventory import ClusterInventory
-                                inv_records = st.session_state.get("cluster_inventory_records")
-                                inventory = ClusterInventory.from_records(inv_records) if inv_records else None
-                                live_exec = KubernetesExecutor(**k8s_cfg, inventory=inventory)
-                            refreshed = run_pipeline_live(
-                                EnterpriseServiceNowConnector(st.session_state.sn_config),
-                                verbose=False,
-                                api_key=st.session_state.anthropic_key or None,
-                                executor=live_exec)
-                            st.session_state.live_result = refreshed
-                        except Exception:
-                            pass  # publish already succeeded; a stale pull just means click again
-                st.rerun()
-            except Exception as e:
-                bar.empty()
-                st.error(f"Publish failed: {e}")
+                            info = EnterpriseServiceNowConnector(new_cfg).test_connection()
+                            st.session_state.sn_config = new_cfg
+                            st.session_state.sn_status = info
+                            st.success(f"Connected to {info['instance']} "
+                                       f"(auth: {info['auth']}). Configuration saved for "
+                                       f"this session.")
+                            st.rerun()
+                        except ServiceNowError as e:
+                            st.session_state.sn_status = None
+                            st.error(f"Connection failed: {e}")
+                            st.caption("Common causes: instance hibernating (wake it at "
+                                       "developer.servicenow.com), wrong instance name, "
+                                       "bad credentials, or the user lacks the itil role.")
+                        except Exception as e:
+                            st.error(f"Unexpected error: {e}")
 
-    if st.session_state.publish_result:
-        if st.button("Clear publish results"):
-            st.session_state.publish_result = None
-            st.rerun()
 
-    st.divider()
-    st.divider()
-    st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
-    st.caption("By default, LIVE mode is **read-only**: Remediation and Change "
-               "Mgmt only log dry-run recommendations, nothing is executed "
-               "anywhere. Configuring this connects a real `kubectl` to a "
-               "real cluster/namespace — matched runbooks (pod restart, "
-               "service restart) will actually run, and only mark an "
-               "incident resolved if a real `kubectl rollout status` check "
-               "confirms it. Runbooks that aren't kubectl-based (disk "
-               "cleanup, node-group scaling, SQL) are honestly refused, not "
-               "faked. **Only point this at a cluster/namespace you control "
-               "and are comfortable letting this app touch — never "
-               "production.**")
+            st.divider()
+            st.subheader("Publish Incidents to ServiceNow")
 
-    k8s_cfg = st.session_state.get("k8s_executor_config")
-    if k8s_cfg:
-        st.success(f"Real executor active: namespace **{k8s_cfg['namespace']}** "
-                   f"{'(context: ' + k8s_cfg['context'] + ')' if k8s_cfg.get('context') else ''}")
-    else:
-        st.info("Not configured — LIVE mode remains read-only (dry-run recommendations only).")
+            if not st.session_state.sn_config:
+                st.info("Save a working connection above to enable publishing.")
+            else:
+                c1, c2, c3 = st.columns(3)
+                do_cmdb = c1.checkbox("Sync CMDB", value=True,
+                                      help="Idempotent upsert of topology CIs — safe to re-run.")
+                do_close = c2.checkbox("Auto-close remediated", value=True)
+                do_lifecycle = c3.checkbox("Read back lifecycle for real MTTR", value=True)
 
-    with st.form("k8s_executor_form"):
-        kc1, kc2 = st.columns(2)
-        with kc1:
-            kubeconfig_path = st.text_input(
-                "Kubeconfig path (blank = default `~/.kube/config` on this host)",
-                value=(k8s_cfg.get("kubeconfig_path") or "") if k8s_cfg else "")
-            k8s_context = st.text_input(
-                "Context (blank = current context)",
-                value=(k8s_cfg.get("context") or "") if k8s_cfg else "")
-        with kc2:
-            k8s_namespace = st.text_input(
-                "Namespace", value=(k8s_cfg.get("namespace", "default") if k8s_cfg else "default"))
-            k8s_timeout = st.number_input(
-                "Timeout (seconds)", 10, 600,
-                value=(k8s_cfg.get("timeout_s", 60) if k8s_cfg else 60), step=10)
-        confirm_real = st.checkbox(
-            "I understand this will execute real kubectl commands against "
-            "this cluster/namespace, and I control this environment.")
-        k8s_submitted = st.form_submit_button("💾 Save & Test Kubernetes Connection",
-                                              type="primary")
+                st.caption(f"Ready to publish **{len(incidents)} incident(s)** and "
+                           f"**{len(result['topology'].cis)} CI(s)** to "
+                           f"`{st.session_state.sn_config.instance}`.")
 
-    if k8s_submitted:
-        if not confirm_real:
-            st.error("Check the confirmation box first — this executes real commands.")
-        else:
-            from core.k8s_executor import KubernetesExecutor
-            new_cfg = dict(kubeconfig_path=kubeconfig_path.strip() or None,
-                           context=k8s_context.strip() or None,
-                           namespace=k8s_namespace.strip() or "default",
-                           timeout_s=int(k8s_timeout))
-            with st.spinner("Testing kubectl connection..."):
-                try:
-                    info = KubernetesExecutor(**new_cfg).test_connection()
-                    st.session_state.k8s_executor_config = new_cfg
-                    st.success(f"Connected — namespace **{info['namespace']}**, "
-                              f"context **{info['context']}**. Real execution "
-                              f"is now active for future LIVE data pulls.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Connection failed: {e}")
+                if st.button("🚀 Publish to ServiceNow", type="primary"):
+                    from core.itsm import ITSMBridge
+                    from core.publisher import publish_incidents
+                    from core.servicenow import EnterpriseServiceNowConnector
+                    bar = st.progress(0.0, text="Starting...")
 
-    if k8s_cfg and st.button("Disable real execution (back to read-only)"):
-        st.session_state.k8s_executor_config = None
-        st.rerun()
+                    def on_progress(done, total, label):
+                        bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
 
-    st.markdown("#### ☁️ Cloud Accounts (Method 2 — registered connections)")
-    st.caption("Same pattern as ServiceNow/Jira above: register each AWS "
-               "account / GCP project / Azure subscription **once**, with "
-               "its own dedicated automation identity, then reference it by "
-               "nickname from as many cluster-inventory rows as you need — "
-               "no repeating credentials per cluster. This is what actually "
-               "performs cloud login (`aws eks update-kubeconfig`, `gcloud "
-               "... get-credentials`, `az aks get-credentials`) on demand, "
-               "instead of requiring the kubeconfig context to already "
-               "exist. **Requires the matching CLI (`aws`/`gcloud`/`az`) "
-               "installed wherever this app is actually running** — "
-               "self-hosted/Docker, not Streamlit Community Cloud's sandbox.")
-
-    st.session_state.setdefault("cloud_accounts", {})
-    accts = st.session_state.cloud_accounts
-    if accts:
-        st.dataframe(pd.DataFrame([
-            {"Nickname": n, "Provider": a.provider,
-             "Detail": (a.aws_region if a.provider == "aws" else
-                       a.gcp_project if a.provider == "gcp" else
-                       a.azure_subscription_id)}
-            for n, a in accts.items()
-        ]), use_container_width=True, hide_index=True)
-
-    with st.form("cloud_account_form"):
-        ca1, ca2 = st.columns(2)
-        with ca1:
-            ca_nickname = st.text_input("Nickname", placeholder="prod-aws")
-            ca_provider = st.selectbox("Provider", ["aws", "gcp", "azure"])
-        with ca2:
-            st.caption("Provider-specific fields appear below based on selection.")
-
-        if ca_provider == "aws":
-            aa1, aa2 = st.columns(2)
-            aws_ambient = aa1.checkbox("Use this host's own IAM identity "
-                                       "(instance/task role) instead of static keys")
-            aws_region = aa2.text_input("Default region", placeholder="us-east-1")
-            aws_key = st.text_input("AWS Access Key ID", disabled=aws_ambient)
-            aws_secret = st.text_input("AWS Secret Access Key", type="password",
-                                       disabled=aws_ambient)
-            gcp_key_file = None
-            gcp_project = ""
-            az_tenant = az_client = az_secret = az_sub = ""
-        elif ca_provider == "gcp":
-            gcp_project = st.text_input("GCP Project ID")
-            gcp_key_file = st.file_uploader(
-                "Service account key JSON (leave empty to use ambient "
-                "`gcloud` identity on this host)", type=["json"],
-                help="Uploaded as a file, never shown as visible/copyable text "
-                     "— read once at submit time and held only in this "
-                     "session's memory.")
-            aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
-            az_tenant = az_client = az_secret = az_sub = ""
-        else:  # azure
-            az1, az2 = st.columns(2)
-            az_tenant = az1.text_input("Tenant ID")
-            az_sub = az2.text_input("Subscription ID")
-            az_client = st.text_input("Service Principal Client ID (blank = "
-                                      "use ambient managed identity on this host)")
-            az_secret = st.text_input("Service Principal Client Secret", type="password")
-            aws_ambient, aws_region, aws_key, aws_secret = False, "", "", ""
-            gcp_key_file = None
-            gcp_project = ""
-
-        ca_submitted = st.form_submit_button("💾 Save & Test Cloud Account",
-                                             type="primary")
-
-    if ca_submitted:
-        if not ca_nickname.strip():
-            st.error("Nickname is required.")
-        else:
-            from core.cloud_accounts import CloudAccount
-            gcp_key_json = gcp_key_file.getvalue().decode("utf-8") if gcp_key_file else ""
-            new_acct = CloudAccount(
-                nickname=ca_nickname.strip(), provider=ca_provider,
-                aws_access_key_id=aws_key, aws_secret_access_key=aws_secret,
-                aws_region=aws_region, aws_use_ambient_identity=aws_ambient,
-                gcp_service_account_key_json=gcp_key_json, gcp_project=gcp_project,
-                azure_tenant_id=az_tenant, azure_client_id=az_client,
-                azure_client_secret=az_secret, azure_subscription_id=az_sub,
-            )
-            with st.spinner(f"Testing {ca_provider} identity..."):
-                try:
-                    info = new_acct.test_connection()
-                    st.session_state.cloud_accounts[new_acct.nickname] = new_acct
-                    st.success(f"Connected — {info['detail'][:150]}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Connection failed: {e}")
-
-    if accts and st.button("Clear all Cloud Accounts"):
-        st.session_state.cloud_accounts = {}
-        st.rerun()
-
-    st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")
-    st.caption("Maps each incident's root-cause CI or business service to the "
-               "**specific** cluster/namespace/kubeconfig context it belongs "
-               "to — required for AWS/GCP/Azure environments with more than "
-               "one cluster. Each row's `kube_context` must already exist in "
-               "your kubeconfig (set up ahead of time via `aws eks "
-               "update-kubeconfig`, `gcloud container clusters "
-               "get-credentials`, or `az aks get-credentials`, using a "
-               "dedicated least-privilege automation identity — CloudOps-AI "
-               "does not perform cloud IAM login itself, it only selects "
-               "and uses the resulting context). Incidents that don't match "
-               "any row are refused, never guessed.")
-
-    from core.cluster_inventory import ClusterInventory, CSV_TEMPLATE
-    st.download_button("⬇️ Download CSV template", CSV_TEMPLATE,
-                       file_name="cluster_inventory_template.csv", mime="text/csv")
-
-    inv_records = st.session_state.get("cluster_inventory_records")
-    inv_file = st.file_uploader("Upload cluster inventory (CSV)", type=["csv"],
-                                key="cluster_inv_upload")
-    if inv_file is not None:
-        try:
-            inv = ClusterInventory.from_csv(inv_file.getvalue().decode("utf-8"))
-            st.session_state.cluster_inventory_records = inv.to_rows()
-            st.success(f"Loaded {len(inv.targets)} cluster target(s).")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Couldn't parse that CSV: {e}")
-
-    if inv_records:
-        st.dataframe(pd.DataFrame(inv_records), use_container_width=True, hide_index=True)
-        vc1, vc2, vc3 = st.columns(3)
-        with vc1:
-            if st.button("🔍 Validate inventory contexts"):
-                import subprocess
-                try:
-                    proc = subprocess.run(["kubectl", "config", "get-contexts", "-o", "name"],
-                                          capture_output=True, text=True, timeout=15)
-                    known = set((proc.stdout or "").splitlines())
-                    missing = [r["match"] for r in inv_records if r["kube_context"] not in known]
-                    if missing:
-                        st.warning(f"{len(missing)} row(s) reference a kube_context not "
-                                  f"found locally: {', '.join(missing)}. Run the matching "
-                                  f"`aws eks update-kubeconfig` / `gcloud ... get-credentials` "
-                                  f"/ `az aks get-credentials` first, or use 'Login all "
-                                  f"targets' below if a Cloud Account is registered.")
-                    else:
-                        st.success(f"All {len(inv_records)} kube_context(s) found locally.")
-                except FileNotFoundError:
-                    st.error("kubectl not found on this host — install it to validate contexts.")
-                except Exception as e:
-                    st.error(f"Validation failed: {e}")
-        with vc2:
-            if st.button("🔑 Login all targets (Method 2)",
-                        help="Uses each row's account_nickname to look up a "
-                             "registered Cloud Account and actually perform "
-                             "cloud login for that cluster."):
-                from core.cluster_inventory import ClusterInventory
-                from core.cloud_accounts import CloudAccountRegistry
-                inv = ClusterInventory.from_records(inv_records)
-                registry = CloudAccountRegistry(list(st.session_state.get("cloud_accounts", {}).values()))
-                with st.spinner("Logging into each cluster target..."):
-                    results = registry.login_all(inv.targets)
-                n_ok = sum(1 for _, ok, _ in results if ok)
-                st.success(f"{n_ok}/{len(results)} logged in successfully.") if n_ok == len(results) \
-                    else st.warning(f"{n_ok}/{len(results)} logged in successfully.")
-                for match, ok, msg in results:
-                    (st.success if ok else st.error)(f"{match}: {msg}")
-        with vc3:
-            if st.button("Clear inventory"):
-                st.session_state.cluster_inventory_records = None
-                st.rerun()
-    else:
-        st.info("No inventory loaded — real execution falls back to the single "
-                "kubeconfig context/namespace configured above, and refuses to "
-                "act on any incident once an inventory exists but doesn't "
-                "match it.")
-
-    st.divider()
-    st.subheader("Jira Integration — Engineering Backlog Sync")
-    st.caption("When Jira is integrated alongside ServiceNow, CloudOps-AI "
-               "auto-files an engineering Jira issue — cross-referenced to "
-               "the ServiceNow ticket number — for any incident that's an "
-               "**automation-backlog gap** (no runbook matched) or has "
-               "**breached its SLA** while still open. Everything else stays "
-               "in ServiceNow only, so Jira doesn't fill up with noise.")
-
-    jcfg = st.session_state.jira_config
-    if jcfg:
-        st.success(f"Configured: **{jcfg.base_url}** · project "
-                   f"**{jcfg.project_key}** · issue type **{jcfg.issue_type}**")
-    else:
-        st.warning("Not configured — Jira sync runs against an in-memory mock.")
-
-    with st.form("jira_config_form"):
-        j1, j2 = st.columns(2)
-        with j1:
-            jira_url = st.text_input(
-                "Jira base URL", value=(jcfg.base_url if jcfg else ""),
-                placeholder="https://yourcompany.atlassian.net")
-            jira_email = st.text_input("Atlassian account email",
-                                       value=(jcfg.email if jcfg else ""))
-            jira_token = st.text_input(
-                "API token", type="password",
-                placeholder="•••••••• (already set — leave blank to keep)" if (jcfg and jcfg.api_token) else "",
-                help="Generate at id.atlassian.com -> API tokens. Never "
-                     "pre-filled — leave blank to keep the saved token.")
-        with j2:
-            jira_project = st.text_input("Project key", value=(jcfg.project_key if jcfg else ""),
-                                         placeholder="AIOPS")
-            jira_issue_type = st.text_input("Issue type",
-                                            value=(jcfg.issue_type if jcfg else "Bug"))
-            jira_timeout = st.number_input("Timeout (seconds)", 5.0, 120.0,
-                                           value=(jcfg.timeout_s if jcfg else 15.0), step=5.0)
-        jira_submitted = st.form_submit_button("💾 Save & Test Jira Connection", type="primary")
-
-    if jira_submitted:
-        from core.jira import JiraConfig, EnterpriseJiraConnector, JiraError
-        resolved_token = jira_token or (jcfg.api_token if jcfg else "")
-        new_jcfg = JiraConfig(base_url=jira_url.strip().rstrip("/"), email=jira_email.strip(),
-                              api_token=resolved_token, project_key=jira_project.strip(),
-                              issue_type=jira_issue_type.strip() or "Bug",
-                              timeout_s=float(jira_timeout))
-        problems = new_jcfg.validate()
-        if problems:
-            for p in problems:
-                st.error(p)
-        else:
-            with st.spinner("Testing Jira connection..."):
-                try:
-                    info = EnterpriseJiraConnector(new_jcfg).test_connection()
-                    st.session_state.jira_config = new_jcfg
-                    st.session_state.jira_status = info
-                    st.success(f"Connected as {info['account']}. Configuration "
-                               f"saved for this session.")
-                    st.rerun()
-                except JiraError as e:
-                    st.session_state.jira_status = None
-                    st.error(f"Connection failed: {e}")
-                except Exception as e:
-                    st.error(f"Unexpected error: {e}")
-
-    st.markdown("**Sync engineering backlog to Jira**")
-    _pub_for_jira = st.session_state.publish_result
-    _tickets_for_jira = (_pub_for_jira.tickets if (_pub_for_jira and _pub_for_jira.tickets)
-                        else result["tickets"])
-    from core.insights import automation_gaps as _auto_gaps_check
-    _gaps_for_jira = _auto_gaps_check(incidents)
-    _already_filed = {i.incident_id for i in st.session_state.jira_issues}
-    from core.jira import sync_candidates
-    _candidates = sync_candidates(_tickets_for_jira, _gaps_for_jira, _already_filed)
-    st.caption(f"{len(_candidates)} ticket(s) currently qualify "
-              f"(automation gap or SLA breach) and haven't been filed yet.")
-
-    if st.button("🔧 Sync to Jira", disabled=not _candidates, key="jira_sync_btn"):
-        from core.jira import JiraBridge, sync_to_jira
-        bar = st.progress(0.0, text="Starting...")
-
-        def on_jira_progress(done, total, label):
-            bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
-
-        try:
-            bridge = JiraBridge(jira_config=st.session_state.jira_config)
-            filed = sync_to_jira(bridge, _tickets_for_jira, _gaps_for_jira,
-                                 _already_filed, progress_cb=on_jira_progress)
-            st.session_state.jira_issues = st.session_state.jira_issues + filed
-            bar.empty()
-            st.success(f"Filed {len(filed)} of {len(_candidates)} Jira issue(s). "
-                      f"See the 🎫 Incidents tab for cross-linked tickets.")
-            st.rerun()
-        except Exception as e:
-            bar.empty()
-            st.error(f"Jira sync failed: {e}")
-
-    if st.session_state.jira_issues:
-        st.dataframe(pd.DataFrame([{
-            "Jira Key": i.key, "Incident": i.incident_id,
-            "SN Ticket": i.sn_ticket_number, "Reason": i.reason,
-            "Status": i.status, "URL": i.url,
-        } for i in st.session_state.jira_issues]),
-            use_container_width=True, hide_index=True)
-        if st.button("Clear Jira sync results"):
-            st.session_state.jira_issues = []
-            st.rerun()
-
-    st.divider()
-    st.subheader("Data Source")
-    st.caption("**Demo**: synthetic telemetry drives all engines (all 7 tabs). "
-               "**Live**: topology and alerts are pulled FROM ServiceNow — "
-               "correlation, RCA, remediation, KPIs and AI briefs run on real "
-               "data, but metric charts and anomaly detection are unavailable "
-               "(ServiceNow holds no time-series).")
-
-    mode = st.radio("Source", ["demo", "live"],
-                    index=0 if st.session_state.data_source == "demo" else 1,
-                    format_func=lambda m: ("Synthetic demo (all tabs)" if m == "demo"
-                                           else "ServiceNow live (real CMDB + alerts)"),
-                    horizontal=True)
-
-    if mode == "live":
-        if not st.session_state.sn_config:
-            st.warning("Connect to ServiceNow above before switching to live mode.")
-        else:
-            def _build_live_executor():
-                k8s_cfg = st.session_state.get("k8s_executor_config")
-                if not k8s_cfg:
-                    return None
-                from core.k8s_executor import KubernetesExecutor
-                from core.cluster_inventory import ClusterInventory
-                inv_records = st.session_state.get("cluster_inventory_records")
-                inventory = ClusterInventory.from_records(inv_records) if inv_records else None
-                return KubernetesExecutor(**k8s_cfg, inventory=inventory)
-
-            cols = st.columns(2)
-            if cols[0].button("🔄 Pull data from ServiceNow", type="primary"):
-                from core.servicenow import EnterpriseServiceNowConnector
-                from pipeline import run_pipeline_live
-                with st.spinner("Pulling CMDB and alerts, running engines..."):
                     try:
-                        conn = EnterpriseServiceNowConnector(st.session_state.sn_config)
-                        live = run_pipeline_live(
-                            conn, verbose=False,
-                            api_key=st.session_state.anthropic_key or None,
-                            executor=_build_live_executor())
-                        st.session_state.live_result = live
-                        st.session_state.data_source = "live"
-                        if not live["incidents"]:
-                            st.warning(f"Pulled {len(live['topology'].cis)} CIs but "
-                                       f"found no open alerts/incidents to correlate. "
-                                       f"Publish some first, or create incidents in "
-                                       f"the instance.")
+                        bridge = ITSMBridge(sn_config=st.session_state.sn_config)
+                        pub_result = publish_incidents(
+                            bridge, incidents, topology=result["topology"],
+                            sync_cmdb=do_cmdb, close_resolved=do_close,
+                            fetch_lifecycle=do_lifecycle, progress_cb=on_progress)
+                        st.session_state.publish_result = pub_result
+                        bar.empty()
+                        if pub_result.ok:
+                            st.success(f"Published {pub_result.created} tickets "
+                                       f"({pub_result.auto_closed} auto-closed) in "
+                                       f"{pub_result.duration_s}s. See the 🎫 Incidents tab.")
                         else:
-                            st.success(f"Live: {len(live['topology'].cis)} CIs, "
-                                       f"{live['stats']['raw_alerts']} alerts -> "
-                                       f"{live['stats']['incidents']} incidents.")
+                            st.warning(f"Completed with issues: {pub_result.created} created, "
+                                       f"{len(pub_result.errors)} error(s). See the 🎫 Incidents tab.")
+                        # Auto-refresh: if we're in live mode, re-pull CMDB/alerts now so
+                        # the just-published tickets and any lifecycle updates show up
+                        # immediately, instead of requiring a second manual pull.
+                        if st.session_state.data_source == "live":
+                            with st.spinner("Refreshing live data from ServiceNow..."):
+                                try:
+                                    from pipeline import run_pipeline_live
+                                    k8s_cfg = st.session_state.get("k8s_executor_config")
+                                    live_exec = None
+                                    if k8s_cfg:
+                                        from core.k8s_executor import KubernetesExecutor
+                                        from core.cluster_inventory import ClusterInventory
+                                        inv_records = st.session_state.get("cluster_inventory_records")
+                                        inventory = ClusterInventory.from_records(inv_records) if inv_records else None
+                                        live_exec = KubernetesExecutor(**k8s_cfg, inventory=inventory)
+                                    refreshed = run_pipeline_live(
+                                        EnterpriseServiceNowConnector(st.session_state.sn_config),
+                                        verbose=False,
+                                        api_key=st.session_state.anthropic_key or None,
+                                        executor=live_exec)
+                                    st.session_state.live_result = refreshed
+                                except Exception:
+                                    pass  # publish already succeeded; a stale pull just means click again
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Pull failed: {e}")
-            if cols[1].button("Inspect instance inventory"):
-                from core.servicenow import EnterpriseServiceNowConnector
-                from core.sn_source import ServiceNowDataSource
-                try:
-                    inv = ServiceNowDataSource(
-                        EnterpriseServiceNowConnector(st.session_state.sn_config)
-                    ).inventory()
-                    st.json(inv)
-                except Exception as e:
-                    st.error(f"Inventory failed: {e}")
-    elif st.session_state.data_source != "demo":
-        st.session_state.data_source = "demo"
-        st.session_state.live_result = None
-        st.rerun()
+                        bar.empty()
+                        st.error(f"Publish failed: {e}")
 
-    st.divider()
-    st.subheader("AI Incident Analyst (Phase 7)")
-    briefs_now = result.get("briefs", [])
-    backend_now = briefs_now[0].backend if briefs_now else "n/a"
-    st.caption(f"Current narrative backend: **{backend_now}**. Without a key, "
-               "briefs are generated deterministically from incident structure "
-               "(no hallucination risk). With a key, Claude writes the executive "
-               "summary and RCA narrative, still grounded in the same structured "
-               "data.")
-    key_in = st.text_input(
-        "Anthropic API key (optional)", type="password",
-        placeholder=("•••••••• (already set — leave blank to keep)"
-                    if st.session_state.anthropic_key else "sk-ant-..."),
-        help="Session-scoped only — never stored, committed, or pre-filled "
-             "back into this field for security.")
-    model_in = st.selectbox(
-        "Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
-        index=0, help="Haiku is fastest and cheapest for short briefs.")
-    kc1, kc2 = st.columns(2)
-    if kc1.button("Enable LLM narratives"):
-        resolved_key = key_in.strip() or st.session_state.anthropic_key
-        if not resolved_key:
-            st.error("Enter a key first.")
-        else:
-            from core.ai_agent import AIIncidentAnalyst
-            with st.spinner("Testing key and regenerating briefs..."):
-                analyst = AIIncidentAnalyst(result["topology"],
-                                            api_key=resolved_key,
-                                            model=model_in)
-                new_briefs = analyst.analyze_all(result["incidents"])
-                if new_briefs and new_briefs[0].backend == "llm":
-                    st.session_state.anthropic_key = resolved_key
-                    result["briefs"] = new_briefs
-                    st.success("LLM narratives enabled — see the 🤖 AI Analyst tab.")
+            if st.session_state.publish_result:
+                if st.button("Clear publish results"):
+                    st.session_state.publish_result = None
+                    st.rerun()
+
+            st.divider()
+
+            st.divider()
+            st.subheader("Data Source")
+            st.caption("**Demo**: synthetic telemetry drives all engines (all 7 tabs). "
+                       "**Live**: topology and alerts are pulled FROM ServiceNow — "
+                       "correlation, RCA, remediation, KPIs and AI briefs run on real "
+                       "data, but metric charts and anomaly detection are unavailable "
+                       "(ServiceNow holds no time-series).")
+
+            mode = st.radio("Source", ["demo", "live"],
+                            index=0 if st.session_state.data_source == "demo" else 1,
+                            format_func=lambda m: ("Synthetic demo (all tabs)" if m == "demo"
+                                                   else "ServiceNow live (real CMDB + alerts)"),
+                            horizontal=True)
+
+            if mode == "live":
+                if not st.session_state.sn_config:
+                    st.warning("Connect to ServiceNow above before switching to live mode.")
                 else:
-                    st.error(f"Key rejected or API unreachable: "
-                             f"{analyst.last_error or 'unknown error'}. "
-                             f"Falling back to deterministic briefs.")
-    if kc2.button("Disable / clear key"):
-        st.session_state.anthropic_key = ""
-        st.rerun()
+                    def _build_live_executor():
+                        k8s_cfg = st.session_state.get("k8s_executor_config")
+                        if not k8s_cfg:
+                            return None
+                        from core.k8s_executor import KubernetesExecutor
+                        from core.cluster_inventory import ClusterInventory
+                        inv_records = st.session_state.get("cluster_inventory_records")
+                        inventory = ClusterInventory.from_records(inv_records) if inv_records else None
+                        return KubernetesExecutor(**k8s_cfg, inventory=inventory)
 
-    st.divider()
-    with st.expander("🔒 How credentials are handled"):
-        st.markdown(
-            "- Credentials live **only in this browser session** — never written "
-            "to disk, never committed, never shared with other visitors.\n"
-            "- They are cleared when the session ends or the app restarts.\n"
-            "- Use a **dedicated integration user** with the `itil` role rather "
-            "than `admin`.\n"
-            "- On a **public** deployment, each visitor supplies their own "
-            "instance — this app ships with no credentials baked in.\n"
-            "- Publishing writes **real tickets** to the instance you configure. "
-            "Point it at a developer/test instance, not production.")
+                    cols = st.columns(2)
+                    if cols[0].button("🔄 Pull data from ServiceNow", type="primary"):
+                        from core.servicenow import EnterpriseServiceNowConnector
+                        from pipeline import run_pipeline_live
+                        with st.spinner("Pulling CMDB and alerts, running engines..."):
+                            try:
+                                conn = EnterpriseServiceNowConnector(st.session_state.sn_config)
+                                live = run_pipeline_live(
+                                    conn, verbose=False,
+                                    api_key=st.session_state.anthropic_key or None,
+                                    executor=_build_live_executor())
+                                st.session_state.live_result = live
+                                st.session_state.data_source = "live"
+                                if not live["incidents"]:
+                                    st.warning(f"Pulled {len(live['topology'].cis)} CIs but "
+                                               f"found no open alerts/incidents to correlate. "
+                                               f"Publish some first, or create incidents in "
+                                               f"the instance.")
+                                else:
+                                    st.success(f"Live: {len(live['topology'].cis)} CIs, "
+                                               f"{live['stats']['raw_alerts']} alerts -> "
+                                               f"{live['stats']['incidents']} incidents.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Pull failed: {e}")
+                    if cols[1].button("Inspect instance inventory"):
+                        from core.servicenow import EnterpriseServiceNowConnector
+                        from core.sn_source import ServiceNowDataSource
+                        try:
+                            inv = ServiceNowDataSource(
+                                EnterpriseServiceNowConnector(st.session_state.sn_config)
+                            ).inventory()
+                            st.json(inv)
+                        except Exception as e:
+                            st.error(f"Inventory failed: {e}")
+            elif st.session_state.data_source != "demo":
+                st.session_state.data_source = "demo"
+                st.session_state.live_result = None
+                st.rerun()
+
+
+
+        with jira_tab:
+            st.subheader("Jira Integration — Engineering Backlog Sync")
+            st.caption("When Jira is integrated alongside ServiceNow, CloudOps-AI "
+                       "auto-files an engineering Jira issue — cross-referenced to "
+                       "the ServiceNow ticket number — for any incident that's an "
+                       "**automation-backlog gap** (no runbook matched) or has "
+                       "**breached its SLA** while still open. Everything else stays "
+                       "in ServiceNow only, so Jira doesn't fill up with noise.")
+
+            jcfg = st.session_state.jira_config
+            if jcfg:
+                st.success(f"Configured: **{jcfg.base_url}** · project "
+                           f"**{jcfg.project_key}** · issue type **{jcfg.issue_type}**")
+            else:
+                st.warning("Not configured — Jira sync runs against an in-memory mock.")
+
+            with st.form("jira_config_form"):
+                j1, j2 = st.columns(2)
+                with j1:
+                    jira_url = st.text_input(
+                        "Jira base URL", value=(jcfg.base_url if jcfg else ""),
+                        placeholder="https://yourcompany.atlassian.net")
+                    jira_email = st.text_input("Atlassian account email",
+                                               value=(jcfg.email if jcfg else ""))
+                    jira_token = st.text_input(
+                        "API token", type="password",
+                        placeholder="•••••••• (already set — leave blank to keep)" if (jcfg and jcfg.api_token) else "",
+                        help="Generate at id.atlassian.com -> API tokens. Never "
+                             "pre-filled — leave blank to keep the saved token.")
+                with j2:
+                    jira_project = st.text_input("Project key", value=(jcfg.project_key if jcfg else ""),
+                                                 placeholder="AIOPS")
+                    jira_issue_type = st.text_input("Issue type",
+                                                    value=(jcfg.issue_type if jcfg else "Bug"))
+                    jira_timeout = st.number_input("Timeout (seconds)", 5.0, 120.0,
+                                                   value=(jcfg.timeout_s if jcfg else 15.0), step=5.0)
+                jira_submitted = st.form_submit_button("💾 Save & Test Jira Connection", type="primary")
+
+            if jira_submitted:
+                from core.jira import JiraConfig, EnterpriseJiraConnector, JiraError
+                resolved_token = jira_token or (jcfg.api_token if jcfg else "")
+                new_jcfg = JiraConfig(base_url=jira_url.strip().rstrip("/"), email=jira_email.strip(),
+                                      api_token=resolved_token, project_key=jira_project.strip(),
+                                      issue_type=jira_issue_type.strip() or "Bug",
+                                      timeout_s=float(jira_timeout))
+                problems = new_jcfg.validate()
+                if problems:
+                    for p in problems:
+                        st.error(p)
+                else:
+                    with st.spinner("Testing Jira connection..."):
+                        try:
+                            info = EnterpriseJiraConnector(new_jcfg).test_connection()
+                            st.session_state.jira_config = new_jcfg
+                            st.session_state.jira_status = info
+                            st.success(f"Connected as {info['account']}. Configuration "
+                                       f"saved for this session.")
+                            st.rerun()
+                        except JiraError as e:
+                            st.session_state.jira_status = None
+                            st.error(f"Connection failed: {e}")
+                        except Exception as e:
+                            st.error(f"Unexpected error: {e}")
+
+            st.markdown("**Sync engineering backlog to Jira**")
+            _pub_for_jira = st.session_state.publish_result
+            _tickets_for_jira = (_pub_for_jira.tickets if (_pub_for_jira and _pub_for_jira.tickets)
+                                else result["tickets"])
+            from core.insights import automation_gaps as _auto_gaps_check
+            _gaps_for_jira = _auto_gaps_check(incidents)
+            _already_filed = {i.incident_id for i in st.session_state.jira_issues}
+            from core.jira import sync_candidates
+            _candidates = sync_candidates(_tickets_for_jira, _gaps_for_jira, _already_filed)
+            st.caption(f"{len(_candidates)} ticket(s) currently qualify "
+                      f"(automation gap or SLA breach) and haven't been filed yet.")
+
+            if st.button("🔧 Sync to Jira", disabled=not _candidates, key="jira_sync_btn"):
+                from core.jira import JiraBridge, sync_to_jira
+                bar = st.progress(0.0, text="Starting...")
+
+                def on_jira_progress(done, total, label):
+                    bar.progress(done / max(total, 1), text=f"{label} ({done}/{total})")
+
+                try:
+                    bridge = JiraBridge(jira_config=st.session_state.jira_config)
+                    filed = sync_to_jira(bridge, _tickets_for_jira, _gaps_for_jira,
+                                         _already_filed, progress_cb=on_jira_progress)
+                    st.session_state.jira_issues = st.session_state.jira_issues + filed
+                    bar.empty()
+                    st.success(f"Filed {len(filed)} of {len(_candidates)} Jira issue(s). "
+                              f"See the 🎫 Incidents tab for cross-linked tickets.")
+                    st.rerun()
+                except Exception as e:
+                    bar.empty()
+                    st.error(f"Jira sync failed: {e}")
+
+            if st.session_state.jira_issues:
+                st.dataframe(pd.DataFrame([{
+                    "Jira Key": i.key, "Incident": i.incident_id,
+                    "SN Ticket": i.sn_ticket_number, "Reason": i.reason,
+                    "Status": i.status, "URL": i.url,
+                } for i in st.session_state.jira_issues]),
+                    use_container_width=True, hide_index=True)
+                if st.button("Clear Jira sync results"):
+                    st.session_state.jira_issues = []
+                    st.rerun()
+
+
+
+        with llm_tab:
+            st.subheader("AI Incident Analyst (Phase 7)")
+            briefs_now = result.get("briefs", [])
+            backend_now = briefs_now[0].backend if briefs_now else "n/a"
+            st.caption(f"Current narrative backend: **{backend_now}**. Without a key, "
+                       "briefs are generated deterministically from incident structure "
+                       "(no hallucination risk). With a key, Claude writes the executive "
+                       "summary and RCA narrative, still grounded in the same structured "
+                       "data.")
+            key_in = st.text_input(
+                "Anthropic API key (optional)", type="password",
+                placeholder=("•••••••• (already set — leave blank to keep)"
+                            if st.session_state.anthropic_key else "sk-ant-..."),
+                help="Session-scoped only — never stored, committed, or pre-filled "
+                     "back into this field for security.")
+            model_in = st.selectbox(
+                "Model", ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929"],
+                index=0, help="Haiku is fastest and cheapest for short briefs.")
+            kc1, kc2 = st.columns(2)
+            if kc1.button("Enable LLM narratives"):
+                resolved_key = key_in.strip() or st.session_state.anthropic_key
+                if not resolved_key:
+                    st.error("Enter a key first.")
+                else:
+                    from core.ai_agent import AIIncidentAnalyst
+                    with st.spinner("Testing key and regenerating briefs..."):
+                        analyst = AIIncidentAnalyst(result["topology"],
+                                                    api_key=resolved_key,
+                                                    model=model_in)
+                        new_briefs = analyst.analyze_all(result["incidents"])
+                        if new_briefs and new_briefs[0].backend == "llm":
+                            st.session_state.anthropic_key = resolved_key
+                            result["briefs"] = new_briefs
+                            st.success("LLM narratives enabled — see the 🤖 AI Analyst tab.")
+                        else:
+                            st.error(f"Key rejected or API unreachable: "
+                                     f"{analyst.last_error or 'unknown error'}. "
+                                     f"Falling back to deterministic briefs.")
+            if kc2.button("Disable / clear key"):
+                st.session_state.anthropic_key = ""
+                st.rerun()
+
+            st.divider()
+            with st.expander("🔒 How credentials are handled"):
+                st.markdown(
+                    "- Credentials live **only in this browser session** — never written "
+                    "to disk, never committed, never shared with other visitors.\n"
+                    "- They are cleared when the session ends or the app restarts.\n"
+                    "- Use a **dedicated integration user** with the `itil` role rather "
+                    "than `admin`.\n"
+                    "- On a **public** deployment, each visitor supplies their own "
+                    "instance — this app ships with no credentials baked in.\n"
+                    "- Publishing writes **real tickets** to the instance you configure. "
+                    "Point it at a developer/test instance, not production.")
+
+
+    with infra_group:
+        k8s_tab, aws_tab, gcp_tab, azure_tab, inv_tab = st.tabs(
+            ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "📋 Cluster Inventory"])
+
+        with k8s_tab:
+            st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
+            st.caption("By default, LIVE mode is **read-only**: Remediation and Change "
+                       "Mgmt only log dry-run recommendations, nothing is executed "
+                       "anywhere. Configuring this connects a real `kubectl` to a "
+                       "real cluster/namespace — matched runbooks (pod restart, "
+                       "service restart) will actually run, and only mark an "
+                       "incident resolved if a real `kubectl rollout status` check "
+                       "confirms it. Runbooks that aren't kubectl-based (disk "
+                       "cleanup, node-group scaling, SQL) are honestly refused, not "
+                       "faked. **Only point this at a cluster/namespace you control "
+                       "and are comfortable letting this app touch — never "
+                       "production.**")
+
+            k8s_cfg = st.session_state.get("k8s_executor_config")
+            if k8s_cfg:
+                st.success(f"Real executor active: namespace **{k8s_cfg['namespace']}** "
+                           f"{'(context: ' + k8s_cfg['context'] + ')' if k8s_cfg.get('context') else ''}")
+            else:
+                st.info("Not configured — LIVE mode remains read-only (dry-run recommendations only).")
+
+            with st.form("k8s_executor_form"):
+                kc1, kc2 = st.columns(2)
+                with kc1:
+                    kubeconfig_path = st.text_input(
+                        "Kubeconfig path (blank = default `~/.kube/config` on this host)",
+                        value=(k8s_cfg.get("kubeconfig_path") or "") if k8s_cfg else "")
+                    k8s_context = st.text_input(
+                        "Context (blank = current context)",
+                        value=(k8s_cfg.get("context") or "") if k8s_cfg else "")
+                with kc2:
+                    k8s_namespace = st.text_input(
+                        "Namespace", value=(k8s_cfg.get("namespace", "default") if k8s_cfg else "default"))
+                    k8s_timeout = st.number_input(
+                        "Timeout (seconds)", 10, 600,
+                        value=(k8s_cfg.get("timeout_s", 60) if k8s_cfg else 60), step=10)
+                confirm_real = st.checkbox(
+                    "I understand this will execute real kubectl commands against "
+                    "this cluster/namespace, and I control this environment.")
+                k8s_submitted = st.form_submit_button("💾 Save & Test Kubernetes Connection",
+                                                      type="primary")
+
+            if k8s_submitted:
+                if not confirm_real:
+                    st.error("Check the confirmation box first — this executes real commands.")
+                else:
+                    from core.k8s_executor import KubernetesExecutor
+                    new_cfg = dict(kubeconfig_path=kubeconfig_path.strip() or None,
+                                   context=k8s_context.strip() or None,
+                                   namespace=k8s_namespace.strip() or "default",
+                                   timeout_s=int(k8s_timeout))
+                    with st.spinner("Testing kubectl connection..."):
+                        try:
+                            info = KubernetesExecutor(**new_cfg).test_connection()
+                            st.session_state.k8s_executor_config = new_cfg
+                            st.success(f"Connected — namespace **{info['namespace']}**, "
+                                      f"context **{info['context']}**. Real execution "
+                                      f"is now active for future LIVE data pulls.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
+
+            if k8s_cfg and st.button("Disable real execution (back to read-only)"):
+                st.session_state.k8s_executor_config = None
+                st.rerun()
+
+
+        with aws_tab:
+            st.subheader("AWS Account")
+            st.caption("Register a dedicated automation IAM identity for this AWS "
+                       "account — used to log into EKS clusters listed in the "
+                       "Cluster Inventory tab. Same Save & Test pattern as "
+                       "ServiceNow/Jira.")
+
+            aws_accts = {n: a for n, a in st.session_state.get("cloud_accounts", {}).items()
+                        if a.provider == "aws"}
+            if aws_accts:
+                st.dataframe(pd.DataFrame([
+                    {"Nickname": n, "Region": a.aws_region,
+                     "Auth": "Ambient host identity" if a.aws_use_ambient_identity else "Static keys"}
+                    for n, a in aws_accts.items()
+                ]), use_container_width=True, hide_index=True)
+
+            with st.form("aws_account_form"):
+                aa1, aa2 = st.columns(2)
+                with aa1:
+                    aws_nickname = st.text_input("Nickname", placeholder="prod-aws")
+                    aws_region = st.text_input("Default region", placeholder="us-east-1")
+                with aa2:
+                    aws_ambient = st.checkbox("Use this host's own IAM identity "
+                                              "(instance/task role) instead of static keys")
+                    aws_key = st.text_input("AWS Access Key ID", disabled=aws_ambient)
+                aws_secret = st.text_input(
+                    "AWS Secret Access Key", type="password", disabled=aws_ambient,
+                    placeholder="•••••••• (leave blank to keep unchanged)",
+                    help="Never pre-filled for security.")
+                aws_submitted = st.form_submit_button("💾 Save & Test AWS Account", type="primary")
+
+            if aws_submitted:
+                if not aws_nickname.strip():
+                    st.error("Nickname is required.")
+                else:
+                    from core.cloud_accounts import CloudAccount
+                    existing = aws_accts.get(aws_nickname.strip())
+                    resolved_secret = aws_secret or (existing.aws_secret_access_key if existing else "")
+                    new_acct = CloudAccount(
+                        nickname=aws_nickname.strip(), provider="aws",
+                        aws_access_key_id=aws_key, aws_secret_access_key=resolved_secret,
+                        aws_region=aws_region.strip(), aws_use_ambient_identity=aws_ambient)
+                    with st.spinner("Testing AWS identity..."):
+                        try:
+                            info = new_acct.test_connection()
+                            st.session_state.setdefault("cloud_accounts", {})
+                            st.session_state.cloud_accounts[new_acct.nickname] = new_acct
+                            st.success(f"Connected — {info['detail'][:150]}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
+
+            if aws_accts and st.button("Remove an AWS account", key="rm_aws"):
+                pick = st.selectbox("Which one?", list(aws_accts.keys()), key="rm_aws_pick")
+                if st.button("Confirm remove", key="rm_aws_confirm"):
+                    del st.session_state.cloud_accounts[pick]
+                    st.rerun()
+
+        with gcp_tab:
+            st.subheader("GCP Project")
+            st.caption("Register a dedicated automation service account for this "
+                       "GCP project — used to log into GKE clusters listed in the "
+                       "Cluster Inventory tab.")
+
+            gcp_accts = {n: a for n, a in st.session_state.get("cloud_accounts", {}).items()
+                        if a.provider == "gcp"}
+            if gcp_accts:
+                st.dataframe(pd.DataFrame([
+                    {"Nickname": n, "Project": a.gcp_project,
+                     "Auth": "Service account key" if a.gcp_service_account_key_json else "Ambient gcloud identity"}
+                    for n, a in gcp_accts.items()
+                ]), use_container_width=True, hide_index=True)
+
+            with st.form("gcp_account_form"):
+                gg1, gg2 = st.columns(2)
+                with gg1:
+                    gcp_nickname = st.text_input("Nickname", placeholder="checkout-gcp")
+                with gg2:
+                    gcp_project = st.text_input("GCP Project ID")
+                gcp_key_file = st.file_uploader(
+                    "Service account key JSON (leave empty to use ambient "
+                    "`gcloud` identity on this host)", type=["json"],
+                    help="Uploaded as a file, never shown as visible/copyable text.")
+                gcp_submitted = st.form_submit_button("💾 Save & Test GCP Account", type="primary")
+
+            if gcp_submitted:
+                if not gcp_nickname.strip():
+                    st.error("Nickname is required.")
+                else:
+                    from core.cloud_accounts import CloudAccount
+                    existing = gcp_accts.get(gcp_nickname.strip())
+                    key_json = (gcp_key_file.getvalue().decode("utf-8") if gcp_key_file
+                               else (existing.gcp_service_account_key_json if existing else ""))
+                    new_acct = CloudAccount(
+                        nickname=gcp_nickname.strip(), provider="gcp",
+                        gcp_service_account_key_json=key_json, gcp_project=gcp_project.strip())
+                    with st.spinner("Testing GCP identity..."):
+                        try:
+                            info = new_acct.test_connection()
+                            st.session_state.setdefault("cloud_accounts", {})
+                            st.session_state.cloud_accounts[new_acct.nickname] = new_acct
+                            st.success(f"Connected — {info['detail'][:150]}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
+
+            if gcp_accts and st.button("Remove a GCP account", key="rm_gcp"):
+                pick = st.selectbox("Which one?", list(gcp_accts.keys()), key="rm_gcp_pick")
+                if st.button("Confirm remove", key="rm_gcp_confirm"):
+                    del st.session_state.cloud_accounts[pick]
+                    st.rerun()
+
+        with azure_tab:
+            st.subheader("Azure Subscription")
+            st.caption("Register a dedicated service principal or managed identity "
+                       "for this Azure subscription — used to log into AKS "
+                       "clusters listed in the Cluster Inventory tab.")
+
+            az_accts = {n: a for n, a in st.session_state.get("cloud_accounts", {}).items()
+                       if a.provider == "azure"}
+            if az_accts:
+                st.dataframe(pd.DataFrame([
+                    {"Nickname": n, "Subscription": a.azure_subscription_id,
+                     "Auth": "Service principal" if a.azure_client_id else "Ambient managed identity"}
+                    for n, a in az_accts.items()
+                ]), use_container_width=True, hide_index=True)
+
+            with st.form("azure_account_form"):
+                az1, az2 = st.columns(2)
+                with az1:
+                    az_nickname = st.text_input("Nickname", placeholder="prod-azure")
+                    az_tenant = st.text_input("Tenant ID")
+                with az2:
+                    az_sub = st.text_input("Subscription ID")
+                    az_client = st.text_input("Service Principal Client ID (blank = "
+                                              "use ambient managed identity)")
+                az_secret = st.text_input(
+                    "Service Principal Client Secret", type="password",
+                    placeholder="•••••••• (leave blank to keep unchanged)",
+                    help="Never pre-filled for security.")
+                az_submitted = st.form_submit_button("💾 Save & Test Azure Account", type="primary")
+
+            if az_submitted:
+                if not az_nickname.strip():
+                    st.error("Nickname is required.")
+                else:
+                    from core.cloud_accounts import CloudAccount
+                    existing = az_accts.get(az_nickname.strip())
+                    resolved_secret = az_secret or (existing.azure_client_secret if existing else "")
+                    new_acct = CloudAccount(
+                        nickname=az_nickname.strip(), provider="azure",
+                        azure_tenant_id=az_tenant.strip(), azure_client_id=az_client.strip(),
+                        azure_client_secret=resolved_secret, azure_subscription_id=az_sub.strip())
+                    with st.spinner("Testing Azure identity..."):
+                        try:
+                            info = new_acct.test_connection()
+                            st.session_state.setdefault("cloud_accounts", {})
+                            st.session_state.cloud_accounts[new_acct.nickname] = new_acct
+                            st.success(f"Connected — {info['detail'][:150]}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
+
+            if az_accts and st.button("Remove an Azure account", key="rm_az"):
+                pick = st.selectbox("Which one?", list(az_accts.keys()), key="rm_az_pick")
+                if st.button("Confirm remove", key="rm_az_confirm"):
+                    del st.session_state.cloud_accounts[pick]
+                    st.rerun()
+
+        with inv_tab:
+            st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")
+            st.caption("Maps each incident's root-cause CI or business service to the "
+                       "**specific** cluster/namespace/kubeconfig context it belongs "
+                       "to — required for AWS/GCP/Azure environments with more than "
+                       "one cluster. Each row's `kube_context` must already exist in "
+                       "your kubeconfig (set up ahead of time via `aws eks "
+                       "update-kubeconfig`, `gcloud container clusters "
+                       "get-credentials`, or `az aks get-credentials`, using a "
+                       "dedicated least-privilege automation identity — CloudOps-AI "
+                       "does not perform cloud IAM login itself, it only selects "
+                       "and uses the resulting context). Incidents that don't match "
+                       "any row are refused, never guessed.")
+
+            from core.cluster_inventory import ClusterInventory, CSV_TEMPLATE
+            st.download_button("⬇️ Download CSV template", CSV_TEMPLATE,
+                               file_name="cluster_inventory_template.csv", mime="text/csv")
+
+            inv_records = st.session_state.get("cluster_inventory_records")
+            inv_file = st.file_uploader("Upload cluster inventory (CSV)", type=["csv"],
+                                        key="cluster_inv_upload")
+            if inv_file is not None:
+                try:
+                    inv = ClusterInventory.from_csv(inv_file.getvalue().decode("utf-8"))
+                    st.session_state.cluster_inventory_records = inv.to_rows()
+                    st.success(f"Loaded {len(inv.targets)} cluster target(s).")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't parse that CSV: {e}")
+
+            if inv_records:
+                st.dataframe(pd.DataFrame(inv_records), use_container_width=True, hide_index=True)
+                vc1, vc2, vc3 = st.columns(3)
+                with vc1:
+                    if st.button("🔍 Validate inventory contexts"):
+                        import subprocess
+                        try:
+                            proc = subprocess.run(["kubectl", "config", "get-contexts", "-o", "name"],
+                                                  capture_output=True, text=True, timeout=15)
+                            known = set((proc.stdout or "").splitlines())
+                            missing = [r["match"] for r in inv_records if r["kube_context"] not in known]
+                            if missing:
+                                st.warning(f"{len(missing)} row(s) reference a kube_context not "
+                                          f"found locally: {', '.join(missing)}. Run the matching "
+                                          f"`aws eks update-kubeconfig` / `gcloud ... get-credentials` "
+                                          f"/ `az aks get-credentials` first, or use 'Login all "
+                                          f"targets' below if a Cloud Account is registered.")
+                            else:
+                                st.success(f"All {len(inv_records)} kube_context(s) found locally.")
+                        except FileNotFoundError:
+                            st.error("kubectl not found on this host — install it to validate contexts.")
+                        except Exception as e:
+                            st.error(f"Validation failed: {e}")
+                with vc2:
+                    if st.button("🔑 Login all targets (Method 2)",
+                                help="Uses each row's account_nickname to look up a "
+                                     "registered Cloud Account and actually perform "
+                                     "cloud login for that cluster."):
+                        from core.cluster_inventory import ClusterInventory
+                        from core.cloud_accounts import CloudAccountRegistry
+                        inv = ClusterInventory.from_records(inv_records)
+                        registry = CloudAccountRegistry(list(st.session_state.get("cloud_accounts", {}).values()))
+                        with st.spinner("Logging into each cluster target..."):
+                            results = registry.login_all(inv.targets)
+                        n_ok = sum(1 for _, ok, _ in results if ok)
+                        st.success(f"{n_ok}/{len(results)} logged in successfully.") if n_ok == len(results) \
+                            else st.warning(f"{n_ok}/{len(results)} logged in successfully.")
+                        for match, ok, msg in results:
+                            (st.success if ok else st.error)(f"{match}: {msg}")
+                with vc3:
+                    if st.button("Clear inventory"):
+                        st.session_state.cluster_inventory_records = None
+                        st.rerun()
+            else:
+                st.info("No inventory loaded — real execution falls back to the single "
+                        "kubeconfig context/namespace configured above, and refuses to "
+                        "act on any incident once an inventory exists but doesn't "
+                        "match it.")
+
 
 # ---------------- On-Call (day-to-day engineer view) ----------------
 with tab_oncall:
