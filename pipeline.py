@@ -143,7 +143,8 @@ if __name__ == "__main__":
     run_pipeline()
 
 
-def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = None):
+def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = None,
+                      executor=None):
     """
     LIVE mode — sources topology and alerts FROM ServiceNow instead of
     synthetic telemetry, then runs the same correlation / remediation /
@@ -154,6 +155,11 @@ def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = Non
     have no input in this mode and are skipped rather than faked. Everything
     downstream — correlation, RCA, remediation matching, KPIs, AI briefs —
     runs on real data.
+
+    `executor`: defaults to the safe ReadOnlyExecutor (dry-run only). Pass a
+    real Executor (e.g. core.k8s_executor.KubernetesExecutor) to actually
+    execute and verify runbooks against real infrastructure — this is an
+    explicit opt-in, never the default.
     """
     from core.sn_source import ServiceNowDataSource
     from core.ai_agent import AIIncidentAnalyst
@@ -178,11 +184,16 @@ def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = Non
         f"({stats['noise_reduction_pct']}% noise reduction)")
 
     from core.remediation import ReadOnlyExecutor
-    rem = RemediationEngine(executor=ReadOnlyExecutor())
+    rem = RemediationEngine(executor=executor or ReadOnlyExecutor())
     for inc in incidents:
         rem.remediate(inc)
-    log(f"[LIVE] Runbook matches: {len(rem.results)} (dry-run recommendations, "
-        f"nothing executed) | pending approval: {len(rem.pending_approval)}")
+    if executor is not None:
+        n_resolved = sum(1 for r in rem.results if r.mode == "live" and r.success)
+        log(f"[LIVE] Runbook matches: {len(rem.results)} | executed & verified: "
+            f"{n_resolved} | pending approval: {len(rem.pending_approval)}")
+    else:
+        log(f"[LIVE] Runbook matches: {len(rem.results)} (dry-run recommendations, "
+            f"nothing executed) | pending approval: {len(rem.pending_approval)}")
 
     kpi = KPIEngine().compute(max(stats["raw_alerts"], 1), incidents)
 

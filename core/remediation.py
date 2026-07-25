@@ -48,9 +48,22 @@ class RemediationResult:
 class Executor:
     """Pluggable execution backend."""
     read_only: bool = False
+    is_real: bool = False    # True only for executors that touch real infrastructure
 
-    def run(self, action: RunbookAction) -> tuple[bool, str]:
+    def run(self, action: RunbookAction, context: dict | None = None) -> tuple[bool, str]:
         raise NotImplementedError
+
+    def supports(self, action: RunbookAction) -> bool:
+        """Whether this backend can actually carry out this action. Default
+        True — LocalExecutor/ReadOnlyExecutor can 'run' (simulate/log)
+        anything. Real executors should override this to be honest about
+        what they can't do rather than silently no-op."""
+        return True
+
+    def verify(self, rb, incident, context: dict | None = None) -> tuple[bool, str]:
+        """Real post-condition check after all actions ran. Default: no
+        verification available/needed (simulated and dry-run executors)."""
+        return True, ""
 
 
 class LocalExecutor(Executor):
@@ -164,9 +177,58 @@ class RemediationEngine:
             return None
 
         read_only = self.executor.read_only
+        is_real = getattr(self.executor, "is_real", False)
         start = time.time()
+        log = []
+
+        if is_real and not read_only:
+            # ---- Real execution path: actually touches infrastructure ----
+            context = (self.executor.build_context(incident)
+                      if hasattr(self.executor, "build_context") else {})
+            incident.status = "remediating"
+            ok = True
+            for action in rb.actions:
+                if not self.executor.supports(action):
+                    ok = False
+                    _, line = self.executor.run(action, context)  # logs the "unsupported" line
+                    log.append(line)
+                    break
+                success, line = self.executor.run(action, context)
+                log.append(line)
+                if not success:
+                    ok = False
+                    break
+            verified = False
+            if ok:
+                verified, vline = self.executor.verify(rb, incident, context)
+                log.append(vline)
+            finish = time.time()
+
+            if ok and verified:
+                incident.status = "resolved"
+                incident.resolved_ts = finish   # real timestamp — not simulated MTTR
+                incident.remediation = f"{rb.name} (executed and verified)"
+                mode = "live"
+            else:
+                # A command running is not the same as the problem being fixed.
+                # Never mark resolved / let ITSM close the ticket on a runbook
+                # that didn't actually complete or didn't verify.
+                incident.status = "remediation_failed"
+                incident.remediation = (f"{rb.name} (execution incomplete — "
+                                        f"see log; not resolved)")
+                mode = "live"
+
+            result = RemediationResult(
+                incident_id=incident.incident_id, runbook_id=rb.runbook_id,
+                runbook_name=rb.name, started_ts=start, finished_ts=finish,
+                success=ok and verified, log=log, mode=mode,
+            )
+            self.results.append(result)
+            return result
+
+        # ---- Simulated (demo) / read-only (dry-run) paths, unchanged ----
         incident.status = "remediating" if not read_only else "remediation_recommended"
-        log, ok = [], True
+        ok = True
         for action in rb.actions:
             success, line = self.executor.run(action)
             log.append(line)

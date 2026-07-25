@@ -33,6 +33,7 @@ st.session_state.setdefault("jira_config", None)     # JiraConfig once validated
 st.session_state.setdefault("jira_status", None)     # last connection test result
 st.session_state.setdefault("jira_issues", [])        # JiraIssue objects filed this session
 st.session_state.setdefault("change_requests", {})     # change_id -> ChangeRequest
+st.session_state.setdefault("k8s_executor_config", None)  # dict of KubernetesExecutor kwargs, or None (read-only)
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
@@ -289,30 +290,44 @@ with tab_rem:
     st.subheader("Self-Healing Execution Log")
 
     is_live = result.get("mode") == "live"
-    if is_live:
+    has_real_executor = bool(st.session_state.get("k8s_executor_config"))
+    if is_live and has_real_executor:
+        st.success("**LIVE mode — real execution active.** A real `kubectl` is "
+                   "wired into a real cluster/namespace (⚙️ Config → Real "
+                   "Kubernetes Executor). Matched kubectl-based runbooks "
+                   "actually run, and are only marked resolved if a real "
+                   "`kubectl rollout status` check confirms the fix worked. "
+                   "Non-kubectl runbooks are honestly refused, not faked.")
+    elif is_live:
         st.warning("**LIVE mode — read-only.** These incidents came from a "
                    "real ServiceNow instance, so nothing is actually "
                    "executed. Below are dry-run **recommendations**: exactly "
                    "which runbook would fire and which commands it would "
-                   "run, logged but not sent anywhere. A human (or a real "
-                   "Executor plugged into `core.remediation.RemediationEngine`"
-                   " — same interface as the demo one) still has to act.")
+                   "run, logged but not sent anywhere. Connect a real "
+                   "executor in **⚙️ Config → Real Kubernetes Executor** to "
+                   "actually execute and verify these.")
     else:
         st.info("**Demo mode — simulated.** These are synthetic incidents "
                 "against synthetic infrastructure, so the executor reports "
                 "simulated success for realistic logs. Nothing runs anywhere "
                 "real. Switch to LIVE ServiceNow data in ⚙️ Config to see the "
-                "honest read-only behavior instead.")
+                "honest read-only (or real-executor) behavior instead.")
 
     rems = result["remediations"]
     n_resolved = sum(1 for r in rems if r.mode == "simulated" and r.success)
     n_recommended = sum(1 for r in rems if r.mode == "read_only")
     n_failed = sum(1 for r in rems if r.mode == "simulated" and not r.success)
+    n_live_verified = sum(1 for r in rems if r.mode == "live" and r.success)
+    n_live_failed = sum(1 for r in rems if r.mode == "live" and not r.success)
     m1, m2, m3 = st.columns(3)
-    if is_live:
+    if is_live and has_real_executor:
+        m1.metric("Executed & verified", n_live_verified)
+        m2.metric("Attempted, not verified", n_live_failed)
+        m3.metric("Runbooks matched", len(rems))
+    elif is_live:
         m1.metric("Recommendations", n_recommended)
         m2.metric("Runbooks matched", len(rems))
-        m3.metric("Executed", 0, help="Always 0 in LIVE mode — read-only by design.")
+        m3.metric("Executed", 0, help="Always 0 without a real executor configured.")
     else:
         m1.metric("Auto-resolved", n_resolved)
         m2.metric("Failed", n_failed)
@@ -322,6 +337,12 @@ with tab_rem:
         if r.mode == "read_only":
             icon = "🟡"
             label = "Recommended (dry-run)"
+        elif r.mode == "live" and r.success:
+            icon = "✅"
+            label = "Executed & verified (real)"
+        elif r.mode == "live":
+            icon = "❌"
+            label = "Executed but not verified — NOT resolved"
         elif r.success:
             icon = "✅"
             label = "Simulated success"
@@ -782,10 +803,16 @@ with tab_cfg:
                     with st.spinner("Refreshing live data from ServiceNow..."):
                         try:
                             from pipeline import run_pipeline_live
+                            k8s_cfg = st.session_state.get("k8s_executor_config")
+                            live_exec = None
+                            if k8s_cfg:
+                                from core.k8s_executor import KubernetesExecutor
+                                live_exec = KubernetesExecutor(**k8s_cfg)
                             refreshed = run_pipeline_live(
                                 EnterpriseServiceNowConnector(st.session_state.sn_config),
                                 verbose=False,
-                                api_key=st.session_state.anthropic_key or None)
+                                api_key=st.session_state.anthropic_key or None,
+                                executor=live_exec)
                             st.session_state.live_result = refreshed
                         except Exception:
                             pass  # publish already succeeded; a stale pull just means click again
@@ -798,6 +825,73 @@ with tab_cfg:
         if st.button("Clear publish results"):
             st.session_state.publish_result = None
             st.rerun()
+
+    st.divider()
+    st.divider()
+    st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
+    st.caption("By default, LIVE mode is **read-only**: Remediation and Change "
+               "Mgmt only log dry-run recommendations, nothing is executed "
+               "anywhere. Configuring this connects a real `kubectl` to a "
+               "real cluster/namespace — matched runbooks (pod restart, "
+               "service restart) will actually run, and only mark an "
+               "incident resolved if a real `kubectl rollout status` check "
+               "confirms it. Runbooks that aren't kubectl-based (disk "
+               "cleanup, node-group scaling, SQL) are honestly refused, not "
+               "faked. **Only point this at a cluster/namespace you control "
+               "and are comfortable letting this app touch — never "
+               "production.**")
+
+    k8s_cfg = st.session_state.get("k8s_executor_config")
+    if k8s_cfg:
+        st.success(f"Real executor active: namespace **{k8s_cfg['namespace']}** "
+                   f"{'(context: ' + k8s_cfg['context'] + ')' if k8s_cfg.get('context') else ''}")
+    else:
+        st.info("Not configured — LIVE mode remains read-only (dry-run recommendations only).")
+
+    with st.form("k8s_executor_form"):
+        kc1, kc2 = st.columns(2)
+        with kc1:
+            kubeconfig_path = st.text_input(
+                "Kubeconfig path (blank = default `~/.kube/config` on this host)",
+                value=(k8s_cfg.get("kubeconfig_path") or "") if k8s_cfg else "")
+            k8s_context = st.text_input(
+                "Context (blank = current context)",
+                value=(k8s_cfg.get("context") or "") if k8s_cfg else "")
+        with kc2:
+            k8s_namespace = st.text_input(
+                "Namespace", value=(k8s_cfg.get("namespace", "default") if k8s_cfg else "default"))
+            k8s_timeout = st.number_input(
+                "Timeout (seconds)", 10, 600,
+                value=(k8s_cfg.get("timeout_s", 60) if k8s_cfg else 60), step=10)
+        confirm_real = st.checkbox(
+            "I understand this will execute real kubectl commands against "
+            "this cluster/namespace, and I control this environment.")
+        k8s_submitted = st.form_submit_button("💾 Save & Test Kubernetes Connection",
+                                              type="primary")
+
+    if k8s_submitted:
+        if not confirm_real:
+            st.error("Check the confirmation box first — this executes real commands.")
+        else:
+            from core.k8s_executor import KubernetesExecutor
+            new_cfg = dict(kubeconfig_path=kubeconfig_path.strip() or None,
+                           context=k8s_context.strip() or None,
+                           namespace=k8s_namespace.strip() or "default",
+                           timeout_s=int(k8s_timeout))
+            with st.spinner("Testing kubectl connection..."):
+                try:
+                    info = KubernetesExecutor(**new_cfg).test_connection()
+                    st.session_state.k8s_executor_config = new_cfg
+                    st.success(f"Connected — namespace **{info['namespace']}**, "
+                              f"context **{info['context']}**. Real execution "
+                              f"is now active for future LIVE data pulls.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Connection failed: {e}")
+
+    if k8s_cfg and st.button("Disable real execution (back to read-only)"):
+        st.session_state.k8s_executor_config = None
+        st.rerun()
 
     st.divider()
     st.subheader("Jira Integration — Engineering Backlog Sync")
@@ -921,6 +1015,13 @@ with tab_cfg:
         if not st.session_state.sn_config:
             st.warning("Connect to ServiceNow above before switching to live mode.")
         else:
+            def _build_live_executor():
+                k8s_cfg = st.session_state.get("k8s_executor_config")
+                if not k8s_cfg:
+                    return None
+                from core.k8s_executor import KubernetesExecutor
+                return KubernetesExecutor(**k8s_cfg)
+
             cols = st.columns(2)
             if cols[0].button("🔄 Pull data from ServiceNow", type="primary"):
                 from core.servicenow import EnterpriseServiceNowConnector
@@ -930,7 +1031,8 @@ with tab_cfg:
                         conn = EnterpriseServiceNowConnector(st.session_state.sn_config)
                         live = run_pipeline_live(
                             conn, verbose=False,
-                            api_key=st.session_state.anthropic_key or None)
+                            api_key=st.session_state.anthropic_key or None,
+                            executor=_build_live_executor())
                         st.session_state.live_result = live
                         st.session_state.data_source = "live"
                         if not live["incidents"]:
