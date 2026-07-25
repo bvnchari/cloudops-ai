@@ -745,6 +745,11 @@ with tab_oncall:
     show_all = st.checkbox("Show auto-remediated incidents too", value=True)
     briefs_by_id = {b.incident_id: b for b in result.get("briefs", [])}
     rem_by_id = {r.incident_id: r for r in result.get("remediations", [])}
+    _pub_oncall = st.session_state.publish_result
+    tickets_by_id = {t.incident_id: t for t in
+                     (_pub_oncall.tickets if (_pub_oncall and _pub_oncall.tickets)
+                      else result["tickets"])}
+    jira_by_id = {j.incident_id: j for j in st.session_state.jira_issues}
 
     for item in queue:
         if not show_all and not item.needs_human:
@@ -768,10 +773,13 @@ with tab_oncall:
 
             pm = postmortem_markdown(inc, brief=briefs_by_id.get(inc.incident_id),
                                      remediation=rem_by_id.get(inc.incident_id),
-                                     topology=result["topology"])
+                                     topology=result["topology"],
+                                     ticket=tickets_by_id.get(inc.incident_id),
+                                     jira_issue=jira_by_id.get(inc.incident_id))
             st.download_button("📄 Download postmortem", pm,
                                file_name=f"postmortem_{inc.incident_id}.md",
                                mime="text/markdown", key=f"pm_{inc.incident_id}")
+
 
     st.divider()
     st.subheader("Alert Tuning — Noise Hotspots")
@@ -1151,10 +1159,17 @@ with tab_reports:
                 from core.reports import postmortem_markdown
                 briefs_by_id = {b.incident_id: b for b in result.get("briefs", [])}
                 rem_by_id = {r.incident_id: r for r in result.get("remediations", [])}
+                _pub_pm = st.session_state.publish_result
+                _tickets_pm = (_pub_pm.tickets if (_pub_pm and _pub_pm.tickets)
+                              else result["tickets"])
+                tickets_by_id_pm = {t.incident_id: t for t in _tickets_pm}
+                jira_by_id_pm = {j.incident_id: j for j in st.session_state.jira_issues}
                 st.session_state["rep_markdown"] = postmortem_markdown(
                     inc_pick, brief=briefs_by_id.get(inc_pick.incident_id),
                     remediation=rem_by_id.get(inc_pick.incident_id),
-                    topology=result["topology"])
+                    topology=result["topology"],
+                    ticket=tickets_by_id_pm.get(inc_pick.incident_id),
+                    jira_issue=jira_by_id_pm.get(inc_pick.incident_id))
                 st.session_state["rep_markdown_name"] = f"postmortem_{inc_pick.incident_id}.md"
 
     elif report_choice == "Executive Briefing":

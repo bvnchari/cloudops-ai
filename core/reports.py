@@ -20,7 +20,7 @@ def _fmt(ts: float | None) -> str:
 
 
 def postmortem_markdown(inc: Incident, brief=None, remediation=None,
-                        topology=None) -> str:
+                        topology=None, ticket=None, jira_issue=None) -> str:
     duration = ((inc.resolved_ts - inc.created_ts) / 60
                 if inc.resolved_ts else None)
     blast = (topology.downstream_of(inc.probable_root_cause)
@@ -36,6 +36,19 @@ def postmortem_markdown(inc: Incident, brief=None, remediation=None,
         f"**Resolved:** {_fmt(inc.resolved_ts)}  ",
         f"**Duration:** {f'{duration:.0f} minutes' if duration else 'ongoing'}  ",
         f"**Status:** {inc.status}",
+    ]
+    if ticket or jira_issue:
+        lines.append("")
+        lines.append("## Tracking")
+        if ticket:
+            lines.append(f"- ServiceNow: **{ticket.number}** ({ticket.state})")
+        if jira_issue:
+            lines.append(f"- Jira: **[{jira_issue.key}]({jira_issue.url})** "
+                         f"— filed as {jira_issue.reason.replace('_', ' ')}")
+        elif ticket:
+            lines.append("- Jira: not filed (doesn't currently qualify as "
+                         "automation gap or SLA breach)")
+    lines += [
         "",
         "## Impact",
         f"- Configuration items affected: {len(inc.impacted_cis)} "
