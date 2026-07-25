@@ -164,112 +164,110 @@ with tab_metrics:
         st.warning("No metric time-series in LIVE mode. ServiceNow stores events "
                    "and CIs, not raw metrics — connect Prometheus/Datadog for this "
                    "tab, or switch back to demo mode in ⚙️ Config.")
-        st.stop()
+    else:
+        keys = sorted(result["series"].keys())
+        key_labels = {f"{ci} · {m}": (ci, m) for ci, m in keys}
+        all_signals = result.get("signals", [])
 
-    keys = sorted(result["series"].keys())
-    key_labels = {f"{ci} · {m}": (ci, m) for ci, m in keys}
-    all_signals = result.get("signals", [])
+        def _series_df(ci: str, metric: str) -> pd.DataFrame:
+            pts = result["series"][(ci, metric)]
+            sigs = {s.ts for s in all_signals if s.ci_id == ci and s.metric == metric}
+            return pd.DataFrame({
+                "ci_id": ci, "metric": metric,
+                "time": pd.to_datetime([p.ts for p in pts], unit="s"),
+                "value": [p.value for p in pts],
+                "is_anomaly": [p.ts in sigs for p in pts],
+            })
 
-    def _series_df(ci: str, metric: str) -> pd.DataFrame:
-        pts = result["series"][(ci, metric)]
-        sigs = {s.ts for s in all_signals if s.ci_id == ci and s.metric == metric}
-        return pd.DataFrame({
-            "ci_id": ci, "metric": metric,
-            "time": pd.to_datetime([p.ts for p in pts], unit="s"),
-            "value": [p.value for p in pts],
-            "is_anomaly": [p.ts in sigs for p in pts],
-        })
+        # ---- Top KPI strip ----
+        total_points = sum(len(result["series"][k]) for k in keys)
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Series tracked", len(keys))
+        k2.metric("Data points", f"{total_points:,}")
+        k3.metric("Anomaly signals", len(all_signals))
+        k4.metric("Source", "LIVE" if result.get("mode") == "live" else "Synthetic/Demo")
 
-    # ---- Top KPI strip ----
-    total_points = sum(len(result["series"][k]) for k in keys)
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Series tracked", len(keys))
-    k2.metric("Data points", f"{total_points:,}")
-    k3.metric("Anomaly signals", len(all_signals))
-    k4.metric("Source", "LIVE" if result.get("mode") == "live" else "Synthetic/Demo")
+        st.divider()
 
-    st.divider()
+        # ---- Series selection (multi-compare) ----
+        sel_labels = st.multiselect(
+            "Series to compare", list(key_labels.keys()),
+            default=[list(key_labels.keys())[0]],
+            help="Select one or more CI · metric pairs. Each renders its own "
+                 "chart with anomaly points overlaid in red.")
 
-    # ---- Series selection (multi-compare) ----
-    sel_labels = st.multiselect(
-        "Series to compare", list(key_labels.keys()),
-        default=[list(key_labels.keys())[0]],
-        help="Select one or more CI · metric pairs. Each renders its own "
-             "chart with anomaly points overlaid in red.")
+        if not sel_labels:
+            st.info("Select at least one series above.")
+        else:
+            frames = [_series_df(*key_labels[lbl]) for lbl in sel_labels]
+            combined = pd.concat(frames, ignore_index=True)
 
-    if not sel_labels:
-        st.info("Select at least one series above.")
-        st.stop()
+            # ---- Real time-range filter, driven by the actual data ----
+            tmin, tmax = combined["time"].min(), combined["time"].max()
+            if tmin < tmax:
+                t_start, t_end = st.slider(
+                    "Time range", min_value=tmin.to_pydatetime(),
+                    max_value=tmax.to_pydatetime(),
+                    value=(tmin.to_pydatetime(), tmax.to_pydatetime()),
+                    format="MM/DD HH:mm")
+                combined = combined[(combined["time"] >= t_start) & (combined["time"] <= t_end)]
 
-    frames = [_series_df(*key_labels[lbl]) for lbl in sel_labels]
-    combined = pd.concat(frames, ignore_index=True)
+            # ---- Per-series stats table ----
+            stats_rows = []
+            for lbl in sel_labels:
+                ci, metric = key_labels[lbl]
+                sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
+                if sub.empty:
+                    continue
+                stats_rows.append({
+                    "Series": lbl,
+                    "Latest": round(sub["value"].iloc[-1], 3),
+                    "Min": round(sub["value"].min(), 3),
+                    "Max": round(sub["value"].max(), 3),
+                    "Avg": round(sub["value"].mean(), 3),
+                    "P95": round(sub["value"].quantile(0.95), 3),
+                    "Anomalies": int(sub["is_anomaly"].sum()),
+                    "Status": "🔴 Anomalous" if sub["is_anomaly"].any() else "🟢 Normal",
+                })
+            st.dataframe(pd.DataFrame(stats_rows), use_container_width=True, hide_index=True)
 
-    # ---- Real time-range filter, driven by the actual data ----
-    tmin, tmax = combined["time"].min(), combined["time"].max()
-    if tmin < tmax:
-        t_start, t_end = st.slider(
-            "Time range", min_value=tmin.to_pydatetime(),
-            max_value=tmax.to_pydatetime(),
-            value=(tmin.to_pydatetime(), tmax.to_pydatetime()),
-            format="MM/DD HH:mm")
-        combined = combined[(combined["time"] >= t_start) & (combined["time"] <= t_end)]
+            # ---- Chart(s) with anomaly overlay ----
+            for lbl in sel_labels:
+                ci, metric = key_labels[lbl]
+                sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
+                if sub.empty:
+                    continue
+                base = alt.Chart(sub).encode(x=alt.X("time:T", title="Time"))
+                line = base.mark_line(color="#1B6FA8").encode(
+                    y=alt.Y("value:Q", title=metric))
+                points = base.transform_filter(alt.datum.is_anomaly).mark_circle(
+                    size=70, color="#D64545").encode(y="value:Q",
+                    tooltip=["time:T", "value:Q"])
+                st.caption(f"**{lbl}**")
+                st.altair_chart((line + points).properties(height=220),
+                                use_container_width=True)
 
-    # ---- Per-series stats table ----
-    stats_rows = []
-    for lbl in sel_labels:
-        ci, metric = key_labels[lbl]
-        sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
-        if sub.empty:
-            continue
-        stats_rows.append({
-            "Series": lbl,
-            "Latest": round(sub["value"].iloc[-1], 3),
-            "Min": round(sub["value"].min(), 3),
-            "Max": round(sub["value"].max(), 3),
-            "Avg": round(sub["value"].mean(), 3),
-            "P95": round(sub["value"].quantile(0.95), 3),
-            "Anomalies": int(sub["is_anomaly"].sum()),
-            "Status": "🔴 Anomalous" if sub["is_anomaly"].any() else "🟢 Normal",
-        })
-    st.dataframe(pd.DataFrame(stats_rows), use_container_width=True, hide_index=True)
+            st.divider()
 
-    # ---- Chart(s) with anomaly overlay ----
-    for lbl in sel_labels:
-        ci, metric = key_labels[lbl]
-        sub = combined[(combined["ci_id"] == ci) & (combined["metric"] == metric)]
-        if sub.empty:
-            continue
-        base = alt.Chart(sub).encode(x=alt.X("time:T", title="Time"))
-        line = base.mark_line(color="#1B6FA8").encode(
-            y=alt.Y("value:Q", title=metric))
-        points = base.transform_filter(alt.datum.is_anomaly).mark_circle(
-            size=70, color="#D64545").encode(y="value:Q",
-            tooltip=["time:T", "value:Q"])
-        st.caption(f"**{lbl}**")
-        st.altair_chart((line + points).properties(height=220),
-                        use_container_width=True)
-
-    st.divider()
-
-    # ---- Bulk export: real data, not re-derived ----
-    st.markdown("### 📦 Bulk data export")
-    e1, e2 = st.columns(2)
-    with e1:
-        sel_csv = combined.sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
-        st.download_button(
-            "⬇️ Download selected series (CSV)", sel_csv,
-            file_name="cloudops_selected_series.csv", mime="text/csv",
-            key="metrics_dl_selected")
-    with e2:
-        full_frames = [_series_df(ci, m) for ci, m in keys]
-        full_csv = pd.concat(full_frames, ignore_index=True) \
-                     .sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
-        st.download_button(
-            "⬇️ Download ALL telemetry (CSV)", full_csv,
-            file_name="cloudops_all_telemetry.csv", mime="text/csv",
-            key="metrics_dl_all",
-            help=f"Every point across all {len(keys)} series currently loaded "
-                 f"— {total_points:,} rows.")
+            # ---- Bulk export: real data, not re-derived ----
+            st.markdown("### 📦 Bulk data export")
+            e1, e2 = st.columns(2)
+            with e1:
+                sel_csv = combined.sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
+                st.download_button(
+                    "⬇️ Download selected series (CSV)", sel_csv,
+                    file_name="cloudops_selected_series.csv", mime="text/csv",
+                    key="metrics_dl_selected")
+            with e2:
+                full_frames = [_series_df(ci, m) for ci, m in keys]
+                full_csv = pd.concat(full_frames, ignore_index=True) \
+                             .sort_values(["ci_id", "metric", "time"]).to_csv(index=False)
+                st.download_button(
+                    "⬇️ Download ALL telemetry (CSV)", full_csv,
+                    file_name="cloudops_all_telemetry.csv", mime="text/csv",
+                    key="metrics_dl_all",
+                    help=f"Every point across all {len(keys)} series currently loaded "
+                         f"— {total_points:,} rows.")
 
 # ---------------- Remediation ----------------
 with tab_rem:
