@@ -34,6 +34,7 @@ st.session_state.setdefault("jira_status", None)     # last connection test resu
 st.session_state.setdefault("jira_issues", [])        # JiraIssue objects filed this session
 st.session_state.setdefault("change_requests", {})     # change_id -> ChangeRequest
 st.session_state.setdefault("k8s_executor_config", None)  # dict of KubernetesExecutor kwargs, or None (read-only)
+st.session_state.setdefault("cluster_inventory_records", None)  # list[dict] uploaded cluster/namespace rows
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
@@ -514,19 +515,56 @@ with tab_change:
                         a = next(a for a in cr.approvals if a.stage == "stage2")
                         st.success(f"Stage 2 approved by **{a.approver}**")
 
-            if cr.fully_approved and cr.status != "prod" and cr.status != "closed":
-                if st.button("🚀 Dry-run in Prod", key=f"prod_{cr.change_id}", type="primary"):
-                    advance_to_prod(cr)
+            if cr.fully_approved and cr.status not in ("prod", "closed"):
+                k8s_cfg = st.session_state.get("k8s_executor_config")
+                inv_records = st.session_state.get("cluster_inventory_records")
+                if k8s_cfg and inv_records:
+                    st.caption("A real executor is configured — pick the target "
+                              "cluster/namespace for this change from the inventory "
+                              "to execute (and verify) it for real, or leave "
+                              "unselected to keep this a dry-run.")
+                    from core.cluster_inventory import ClusterInventory
+                    inv = ClusterInventory.from_records(inv_records)
+                    target_labels = ["(dry-run only — don't execute for real)"] + \
+                                    [f"{t.match} · {t.cluster_name}/{t.namespace}" for t in inv.targets]
+                    pick = st.selectbox("Execution target", target_labels,
+                                        key=f"target_{cr.change_id}")
+                    if pick != target_labels[0]:
+                        t = inv.targets[target_labels.index(pick) - 1]
+                        cr.target_context = {"deployment": t.match.rstrip("*"), "node": t.match.rstrip("*"),
+                                             "namespace": t.namespace, "kube_context": t.kube_context,
+                                             "target_found": True, "target": t}
+                    else:
+                        cr.target_context = None
+
+                btn_label = ("🚀 Execute in Prod (real)" if (k8s_cfg and cr.target_context)
+                            else "🚀 Dry-run in Prod")
+                if st.button(btn_label, key=f"prod_{cr.change_id}", type="primary"):
+                    live_exec = None
+                    if k8s_cfg and cr.target_context:
+                        from core.k8s_executor import KubernetesExecutor
+                        live_exec = KubernetesExecutor(**k8s_cfg)
+                    try:
+                        advance_to_prod(cr, executor=live_exec)
+                    except ValueError as e:
+                        st.error(str(e))
                     st.rerun()
             if cr.prod_evidence:
-                st.success("Prod dry-run recorded — both approvals on file, "
-                          "ready for a human (or a wired-in Executor) to "
-                          "actually execute.")
+                if cr.status == "prod" and cr.prod_evidence.note.startswith("Executed for real"):
+                    st.success("Executed for real and verified — the change is genuinely complete.")
+                elif cr.status == "prod_execution_failed":
+                    st.error("Executed but NOT verified — this change is NOT complete. "
+                             "Investigate before closing.")
+                else:
+                    st.success("Prod dry-run recorded — both approvals on file, "
+                              "ready for a human (or a wired-in Executor) to "
+                              "actually execute.")
                 with st.expander("Prod evidence"):
                     for line in cr.prod_evidence.steps_logged:
                         st.code(line, language="bash")
                     st.caption(cr.prod_evidence.note)
-                if cr.status != "closed" and st.button("🔒 Close change", key=f"close_{cr.change_id}"):
+                if cr.status not in ("closed", "prod_execution_failed") and \
+                        st.button("🔒 Close change", key=f"close_{cr.change_id}"):
                     close_change(cr)
                     st.rerun()
 
@@ -807,7 +845,10 @@ with tab_cfg:
                             live_exec = None
                             if k8s_cfg:
                                 from core.k8s_executor import KubernetesExecutor
-                                live_exec = KubernetesExecutor(**k8s_cfg)
+                                from core.cluster_inventory import ClusterInventory
+                                inv_records = st.session_state.get("cluster_inventory_records")
+                                inventory = ClusterInventory.from_records(inv_records) if inv_records else None
+                                live_exec = KubernetesExecutor(**k8s_cfg, inventory=inventory)
                             refreshed = run_pipeline_live(
                                 EnterpriseServiceNowConnector(st.session_state.sn_config),
                                 verbose=False,
@@ -892,6 +933,67 @@ with tab_cfg:
     if k8s_cfg and st.button("Disable real execution (back to read-only)"):
         st.session_state.k8s_executor_config = None
         st.rerun()
+
+    st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")
+    st.caption("Maps each incident's root-cause CI or business service to the "
+               "**specific** cluster/namespace/kubeconfig context it belongs "
+               "to — required for AWS/GCP/Azure environments with more than "
+               "one cluster. Each row's `kube_context` must already exist in "
+               "your kubeconfig (set up ahead of time via `aws eks "
+               "update-kubeconfig`, `gcloud container clusters "
+               "get-credentials`, or `az aks get-credentials`, using a "
+               "dedicated least-privilege automation identity — CloudOps-AI "
+               "does not perform cloud IAM login itself, it only selects "
+               "and uses the resulting context). Incidents that don't match "
+               "any row are refused, never guessed.")
+
+    from core.cluster_inventory import ClusterInventory, CSV_TEMPLATE
+    st.download_button("⬇️ Download CSV template", CSV_TEMPLATE,
+                       file_name="cluster_inventory_template.csv", mime="text/csv")
+
+    inv_records = st.session_state.get("cluster_inventory_records")
+    inv_file = st.file_uploader("Upload cluster inventory (CSV)", type=["csv"],
+                                key="cluster_inv_upload")
+    if inv_file is not None:
+        try:
+            inv = ClusterInventory.from_csv(inv_file.getvalue().decode("utf-8"))
+            st.session_state.cluster_inventory_records = inv.to_rows()
+            st.success(f"Loaded {len(inv.targets)} cluster target(s).")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Couldn't parse that CSV: {e}")
+
+    if inv_records:
+        st.dataframe(pd.DataFrame(inv_records), use_container_width=True, hide_index=True)
+        vc1, vc2 = st.columns(2)
+        with vc1:
+            if st.button("🔍 Validate inventory contexts"):
+                import subprocess
+                try:
+                    proc = subprocess.run(["kubectl", "config", "get-contexts", "-o", "name"],
+                                          capture_output=True, text=True, timeout=15)
+                    known = set((proc.stdout or "").splitlines())
+                    missing = [r["match"] for r in inv_records if r["kube_context"] not in known]
+                    if missing:
+                        st.warning(f"{len(missing)} row(s) reference a kube_context not "
+                                  f"found locally: {', '.join(missing)}. Run the matching "
+                                  f"`aws eks update-kubeconfig` / `gcloud ... get-credentials` "
+                                  f"/ `az aks get-credentials` first.")
+                    else:
+                        st.success(f"All {len(inv_records)} kube_context(s) found locally.")
+                except FileNotFoundError:
+                    st.error("kubectl not found on this host — install it to validate contexts.")
+                except Exception as e:
+                    st.error(f"Validation failed: {e}")
+        with vc2:
+            if st.button("Clear inventory"):
+                st.session_state.cluster_inventory_records = None
+                st.rerun()
+    else:
+        st.info("No inventory loaded — real execution falls back to the single "
+                "kubeconfig context/namespace configured above, and refuses to "
+                "act on any incident once an inventory exists but doesn't "
+                "match it.")
 
     st.divider()
     st.subheader("Jira Integration — Engineering Backlog Sync")
@@ -1020,7 +1122,10 @@ with tab_cfg:
                 if not k8s_cfg:
                     return None
                 from core.k8s_executor import KubernetesExecutor
-                return KubernetesExecutor(**k8s_cfg)
+                from core.cluster_inventory import ClusterInventory
+                inv_records = st.session_state.get("cluster_inventory_records")
+                inventory = ClusterInventory.from_records(inv_records) if inv_records else None
+                return KubernetesExecutor(**k8s_cfg, inventory=inventory)
 
             cols = st.columns(2)
             if cols[0].button("🔄 Pull data from ServiceNow", type="primary"):

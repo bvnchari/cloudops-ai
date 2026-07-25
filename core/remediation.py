@@ -65,6 +65,12 @@ class Executor:
         verification available/needed (simulated and dry-run executors)."""
         return True, ""
 
+    def validate_target(self, incident, context: dict | None = None) -> tuple[bool, str]:
+        """Confirm the resolved target (cluster/namespace/resource) actually
+        exists BEFORE any action runs. Default: nothing to validate
+        (simulated and dry-run executors have no real target)."""
+        return True, ""
+
 
 class LocalExecutor(Executor):
     """DEMO-ONLY executor: simulates execution with realistic logs and always
@@ -186,6 +192,21 @@ class RemediationEngine:
             context = (self.executor.build_context(incident)
                       if hasattr(self.executor, "build_context") else {})
             incident.status = "remediating"
+
+            valid, vtline = self.executor.validate_target(incident, context)
+            log.append(vtline)
+            if not valid:
+                finish = time.time()
+                incident.status = "remediation_failed"
+                incident.remediation = f"{rb.name} (target validation failed — not attempted)"
+                result = RemediationResult(
+                    incident_id=incident.incident_id, runbook_id=rb.runbook_id,
+                    runbook_name=rb.name, started_ts=start, finished_ts=finish,
+                    success=False, log=log, mode="live",
+                )
+                self.results.append(result)
+                return result
+
             ok = True
             for action in rb.actions:
                 if not self.executor.supports(action):

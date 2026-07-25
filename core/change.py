@@ -78,6 +78,7 @@ class ChangeRequest:
     sn_change_number: str | None = None
     jira_key: str | None = None
     created_at: float = field(default_factory=time.time)
+    target_context: dict | None = None   # explicit cluster/namespace for real Prod execution
 
     @property
     def ready_for_prod(self) -> bool:
@@ -133,11 +134,51 @@ def approve(cr: ChangeRequest, stage: str, approver: str) -> ChangeRequest:
     return cr
 
 
-def advance_to_prod(cr: ChangeRequest) -> ChangeRequest:
+def advance_to_prod(cr: ChangeRequest, executor=None) -> ChangeRequest:
     if not cr.fully_approved:
         raise ValueError("Both approval stages are required before Prod.")
-    cr.prod_evidence = _dry_run(cr.plan, "prod")
-    cr.status = "prod"
+
+    is_real = executor is not None and getattr(executor, "is_real", False) and not executor.read_only
+    if not is_real:
+        cr.prod_evidence = _dry_run(cr.plan, "prod")
+        cr.status = "prod"
+        return cr
+
+    # ---- Real, verified Prod execution ----
+    if not cr.target_context or not cr.target_context.get("target_found", True):
+        raise ValueError("No cluster/namespace target selected for this change — "
+                         "pick one from the inventory before executing Prod for real.")
+    ctx = cr.target_context
+    from .remediation import RunbookAction
+    log_lines = []
+    ok = True
+    for step in cr.plan.steps:
+        action = RunbookAction(name=step.name, command=step.command)
+        if not executor.supports(action):
+            ok = False
+            log_lines.append(f"[UNSUPPORTED] {step.name}: `{step.command}` — no real "
+                             f"executor for this action type; change not executed.")
+            break
+        success, line = executor.run(action, ctx)
+        log_lines.append(line)
+        if not success:
+            ok = False
+            break
+
+    verified = False
+    if ok:
+        deployment = ctx.get("deployment", "unknown")
+        verified, vline = executor.verify(None, type("_", (), {
+            "probable_root_cause": deployment, "business_service": None})(), ctx)
+        log_lines.append(vline)
+
+    cr.prod_evidence = Evidence(
+        environment="prod", recorded_at=time.time(), steps_logged=log_lines,
+        note=("Executed for real and verified via a live post-check."
+              if (ok and verified) else
+              "Execution attempted but NOT verified — treat as unresolved; "
+              "do not consider this change complete."))
+    cr.status = "prod" if (ok and verified) else "prod_execution_failed"
     return cr
 
 
