@@ -191,7 +191,8 @@ def itsm_report_markdown(tickets, period_label: str = "current window",
 
 
 def exec_report_markdown(kpi, stats, slo_statuses, scorecard, gaps,
-                         hotspots=None, period_label: str = "current window") -> str:
+                         hotspots=None, period_label: str = "current window",
+                         jira_issues=None, sla_breach_count: int | None = None) -> str:
     lines = [
         "# Reliability Briefing",
         f"*Period: {period_label} · generated "
@@ -255,6 +256,20 @@ def exec_report_markdown(kpi, stats, slo_statuses, scorecard, gaps,
         for h in hotspots[:5]:
             lines.append(f"| {h.ci_id} | {h.metric} | {h.alert_count} | "
                          f"{h.pct_of_total}% | {h.recommendation} |")
+        lines.append("")
+
+    if jira_issues is not None or sla_breach_count is not None:
+        lines += ["## ITSM & Jira sync status", "",
+                  f"- SLA breaches (open tickets past target): "
+                  f"**{sla_breach_count if sla_breach_count is not None else '—'}**",
+                  f"- Engineering issues filed in Jira this session: "
+                  f"**{len(jira_issues) if jira_issues else 0}**"]
+        if jira_issues:
+            lines += ["", "| Jira Key | Incident | SN Ticket | Reason |",
+                      "|---|---|---|---|"]
+            for i in jira_issues[:10]:
+                lines.append(f"| {i.key} | {i.incident_id} | {i.sn_ticket_number} | "
+                             f"{i.reason.replace('_', ' ')} |")
         lines.append("")
 
     lines += ["---",

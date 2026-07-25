@@ -230,12 +230,68 @@ with tab_metrics:
 
 # ---------------- Remediation ----------------
 with tab_rem:
+    from core.remediation import DEFAULT_RUNBOOKS
+
     st.subheader("Self-Healing Execution Log")
-    for r in result["remediations"]:
-        icon = "✅" if r.success else "❌"
-        with st.expander(f"{icon} {r.incident_id} → {r.runbook_name}"):
+
+    is_live = result.get("mode") == "live"
+    if is_live:
+        st.warning("**LIVE mode — read-only.** These incidents came from a "
+                   "real ServiceNow instance, so nothing is actually "
+                   "executed. Below are dry-run **recommendations**: exactly "
+                   "which runbook would fire and which commands it would "
+                   "run, logged but not sent anywhere. A human (or a real "
+                   "Executor plugged into `core.remediation.RemediationEngine`"
+                   " — same interface as the demo one) still has to act.")
+    else:
+        st.info("**Demo mode — simulated.** These are synthetic incidents "
+                "against synthetic infrastructure, so the executor reports "
+                "simulated success for realistic logs. Nothing runs anywhere "
+                "real. Switch to LIVE ServiceNow data in ⚙️ Config to see the "
+                "honest read-only behavior instead.")
+
+    rems = result["remediations"]
+    n_resolved = sum(1 for r in rems if r.mode == "simulated" and r.success)
+    n_recommended = sum(1 for r in rems if r.mode == "read_only")
+    n_failed = sum(1 for r in rems if r.mode == "simulated" and not r.success)
+    m1, m2, m3 = st.columns(3)
+    if is_live:
+        m1.metric("Recommendations", n_recommended)
+        m2.metric("Runbooks matched", len(rems))
+        m3.metric("Executed", 0, help="Always 0 in LIVE mode — read-only by design.")
+    else:
+        m1.metric("Auto-resolved", n_resolved)
+        m2.metric("Failed", n_failed)
+        m3.metric("Total runbook runs", len(rems))
+
+    for r in rems:
+        if r.mode == "read_only":
+            icon = "🟡"
+            label = "Recommended (dry-run)"
+        elif r.success:
+            icon = "✅"
+            label = "Simulated success"
+        else:
+            icon = "❌"
+            label = "Failed"
+        with st.expander(f"{icon} {r.incident_id} → {r.runbook_name} · {label}"):
             for line in r.log:
                 st.code(line, language="bash")
+
+    st.divider()
+    st.subheader("What incidents does the AI act on?")
+    st.caption("A runbook only matches when BOTH the incident's correlated "
+               "metrics AND its severity fit — everything else is left for a "
+               "human. `auto_approve=False` runbooks (capacity/scaling "
+               "changes) never auto-fire even in demo mode; they always wait "
+               "for change-management approval, shown as 🕐 pending in the "
+               "On-Call tab.")
+    st.dataframe(pd.DataFrame([{
+        "Runbook": rb.name, "Triggers on metrics": ", ".join(rb.match_metrics),
+        "Severities": ", ".join(rb.match_severities),
+        "Approval": "Auto" if rb.auto_approve else "🕐 Requires human approval",
+        "Actions": " → ".join(a.name for a in rb.actions),
+    } for rb in DEFAULT_RUNBOOKS]), use_container_width=True, hide_index=True)
 
 # ---------------- ITSM ----------------
 with tab_itsm:
@@ -750,6 +806,8 @@ with tab_oncall:
                      (_pub_oncall.tickets if (_pub_oncall and _pub_oncall.tickets)
                       else result["tickets"])}
     jira_by_id = {j.incident_id: j for j in st.session_state.jira_issues}
+    gaps = automation_gaps(incidents)
+    gap_ids = {g.incident_id for g in gaps}
 
     for item in queue:
         if not show_all and not item.needs_human:
@@ -771,11 +829,23 @@ with tab_oncall:
             st.markdown(f"**Alerts folded in:** {inc.raw_alert_count} · "
                         f"**Remediation:** {inc.remediation or 'none matched'}")
 
+            _tk = tickets_by_id.get(inc.incident_id)
+            _jr = jira_by_id.get(inc.incident_id)
+            if _tk:
+                from core.jira import sla_breached as _sla_breached_check
+                _breach = _sla_breached_check(_tk)
+                badge = (f"🎫 SN **{_tk.number}** ({_tk.state}) · "
+                        f"SLA {'🔴 breach' if _breach else '🟢 on track'}")
+                if _jr:
+                    badge += f" · 🔧 Jira **[{_jr.key}]({_jr.url})**"
+                elif _breach or inc.incident_id in gap_ids:
+                    badge += " · 🟡 qualifies for Jira, not yet synced"
+                st.caption(badge)
+
             pm = postmortem_markdown(inc, brief=briefs_by_id.get(inc.incident_id),
                                      remediation=rem_by_id.get(inc.incident_id),
                                      topology=result["topology"],
-                                     ticket=tickets_by_id.get(inc.incident_id),
-                                     jira_issue=jira_by_id.get(inc.incident_id))
+                                     ticket=_tk, jira_issue=_jr)
             st.download_button("📄 Download postmortem", pm,
                                file_name=f"postmortem_{inc.incident_id}.md",
                                mime="text/markdown", key=f"pm_{inc.incident_id}")
@@ -799,7 +869,6 @@ with tab_oncall:
 
     st.divider()
     st.subheader("Automation Backlog — Runbook Coverage Gaps")
-    gaps = automation_gaps(incidents)
     if gaps:
         total_toil = sum(g.est_annual_toil_hours for g in gaps)
         st.warning(f"{len(gaps)} incident pattern(s) had no matching runbook — "
@@ -809,7 +878,13 @@ with tab_oncall:
             "Severity": g.severity, "Root cause": g.root_cause,
             "Suggested runbook": g.suggested_runbook,
             "Est. annual toil (h)": g.est_annual_toil_hours,
+            "Jira": (jira_by_id[g.incident_id].key if g.incident_id in jira_by_id
+                    else "🟡 not filed"),
         } for g in gaps]), use_container_width=True, hide_index=True)
+        _unsynced_gaps = [g for g in gaps if g.incident_id not in jira_by_id]
+        if _unsynced_gaps:
+            st.caption(f"{len(_unsynced_gaps)} of {len(gaps)} gap(s) not yet in Jira — "
+                      f"sync from **⚙️ Config → Jira Integration**.")
     else:
         st.success("Full runbook coverage — every incident matched an "
                    "auto-remediation path.")
@@ -881,12 +956,42 @@ with tab_exec:
               f"{roi.est_automation_savings_usd / max(hourly_cost, 1):,.0f}")
 
     st.divider()
+    st.subheader("ITSM & Jira Sync Status")
+    st.caption("Same live ticket/Jira data as the 🎫 ITSM tab and 🔧 Jira sync in "
+               "⚙️ Config — surfaced here for management visibility, not "
+               "recomputed separately.")
+    from core.jira import sla_breached as _exec_sla_breached
+    _pub_exec = st.session_state.publish_result
+    _tickets_exec = (_pub_exec.tickets if (_pub_exec and _pub_exec.tickets)
+                     else result["tickets"])
+    _jira_exec = st.session_state.jira_issues
+    _breaches_exec = [t for t in _tickets_exec if _exec_sla_breached(t)]
+    _gaps_exec = automation_gaps(incidents)
+    _filed_ids_exec = {j.incident_id for j in _jira_exec}
+    _pending_exec = [g for g in _gaps_exec if g.incident_id not in _filed_ids_exec] + \
+                    [t for t in _breaches_exec if t.incident_id not in _filed_ids_exec]
+    _pending_unique = {getattr(x, "incident_id") for x in _pending_exec}
+
+    x1, x2, x3, x4 = st.columns(4)
+    x1.metric("Open tickets", sum(1 for t in _tickets_exec if t.state != "Resolved"))
+    x2.metric("SLA breaches", len(_breaches_exec))
+    x3.metric("Filed in Jira", len(_jira_exec))
+    x4.metric("Pending Jira sync", len(_pending_unique),
+             delta=None if not _pending_unique else f"-{len(_pending_unique)}",
+             delta_color="inverse")
+    if _pending_unique:
+        st.info(f"{len(_pending_unique)} incident(s) qualify for engineering "
+               f"backlog (automation gap or SLA breach) but haven't been "
+               f"synced to Jira yet. Sync from **⚙️ Config → Jira Integration**.")
+
+    st.divider()
     st.subheader("Export")
     report_md = exec_report_markdown(
         kpi, stats, statuses, scorecard, automation_gaps(incidents),
         noise_hotspots(result["raw_alerts"]),
         period_label=("live ServiceNow data" if result.get("mode") == "live"
-                      else "demo analysis window"))
+                      else "demo analysis window"),
+        jira_issues=_jira_exec, sla_breach_count=len(_breaches_exec))
     st.download_button("📊 Download reliability briefing (Markdown)", report_md,
                        file_name="reliability_briefing.md", mime="text/markdown")
     with st.expander("Preview"):
@@ -1176,10 +1281,17 @@ with tab_reports:
         period_choice, c_start, c_end = _period_picker("rep_exec")
         if st.button("🔄 Build executive briefing", key="rep_build_exec"):
             from core.reports import exec_report_markdown
+            from core.jira import sla_breached as _rep_sla_breached
             b = _build_current_bundle(period_choice, c_start, c_end)
+            _pub_rep = st.session_state.publish_result
+            _tickets_rep = (_pub_rep.tickets if (_pub_rep and _pub_rep.tickets)
+                           else result["tickets"])
+            _breach_count_rep = sum(1 for t in _tickets_rep if _rep_sla_breached(t))
             st.session_state["rep_markdown"] = exec_report_markdown(
                 b.kpi, b.stats, b.slo_statuses, b.scorecard, b.gaps,
-                hotspots=b.hotspots, period_label=b.period.label)
+                hotspots=b.hotspots, period_label=b.period.label,
+                jira_issues=st.session_state.jira_issues,
+                sla_breach_count=_breach_count_rep)
             st.session_state["rep_markdown_name"] = "CloudOps-AI_Executive_Briefing.md"
 
     elif report_choice == "ITSM Ticket Summary":

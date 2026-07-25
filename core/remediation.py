@@ -42,19 +42,43 @@ class RemediationResult:
     finished_ts: float
     success: bool
     log: list = field(default_factory=list)
+    mode: str = "simulated"      # "simulated" | "read_only" | "live"
 
 
 class Executor:
     """Pluggable execution backend."""
+    read_only: bool = False
+
     def run(self, action: RunbookAction) -> tuple[bool, str]:
         raise NotImplementedError
 
 
 class LocalExecutor(Executor):
-    """Demo executor: simulates execution with realistic logs. Replace with
-    AnsibleExecutor / SSMExecutor / K8sExecutor in production (same interface)."""
+    """DEMO-ONLY executor: simulates execution with realistic logs and always
+    reports success. Appropriate ONLY for synthetic/demo incidents where
+    nothing real is at stake. Replace with AnsibleExecutor / SSMExecutor /
+    K8sExecutor (same interface) to actually execute against real
+    infrastructure — that integration isn't included here since it requires
+    real credentials and a blast-radius review specific to your environment.
+    """
+    read_only = False
+
     def run(self, action: RunbookAction) -> tuple[bool, str]:
-        return True, f"[OK] {action.name}: `{action.command}` completed"
+        return True, f"[SIMULATED] {action.name}: `{action.command}` completed"
+
+
+class ReadOnlyExecutor(Executor):
+    """Safe default for REAL incidents (e.g. sourced from live ServiceNow):
+    logs exactly what a runbook *would* run, executes nothing, and never
+    fabricates a resolution. RemediationEngine treats this executor
+    specially — matched incidents get a recommendation, not a fake
+    "resolved" status, and are never auto-closed in ITSM on the strength
+    of a dry-run.
+    """
+    read_only = True
+
+    def run(self, action: RunbookAction) -> tuple[bool, str]:
+        return False, f"[DRY-RUN — not executed] {action.name}: `{action.command}`"
 
 
 DEFAULT_RUNBOOKS = [
@@ -138,24 +162,37 @@ class RemediationEngine:
             incident.status = "pending_approval"
             incident.remediation = f"{rb.name} (awaiting change approval)"
             return None
+
+        read_only = self.executor.read_only
         start = time.time()
-        incident.status = "remediating"
+        incident.status = "remediating" if not read_only else "remediation_recommended"
         log, ok = [], True
         for action in rb.actions:
             success, line = self.executor.run(action)
             log.append(line)
+            if read_only:
+                continue          # dry-run: log every step, never execute/abort
             if not success:
                 ok = False
                 break
         finish = time.time()
-        if ok:
+
+        if read_only:
+            # Never fabricate a resolution for a real incident. A human (or a
+            # real Executor plugged into `self.executor`) still has to act.
+            ok = False
+            incident.status = "remediation_recommended"
+            incident.remediation = f"{rb.name} (recommended — dry-run only, not executed)"
+        elif ok:
             incident.status = "resolved"
             incident.resolved_ts = incident.created_ts + 300 + 120 * len(rb.actions)  # simulated MTTR
             incident.remediation = rb.name
+
         result = RemediationResult(
             incident_id=incident.incident_id, runbook_id=rb.runbook_id,
             runbook_name=rb.name, started_ts=start, finished_ts=finish,
             success=ok, log=log,
+            mode="read_only" if read_only else "simulated",
         )
         self.results.append(result)
         return result

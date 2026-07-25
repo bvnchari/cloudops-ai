@@ -177,11 +177,12 @@ def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = Non
     log(f"[LIVE] {stats['raw_alerts']} alerts -> {stats['incidents']} incidents "
         f"({stats['noise_reduction_pct']}% noise reduction)")
 
-    rem = RemediationEngine()
+    from core.remediation import ReadOnlyExecutor
+    rem = RemediationEngine(executor=ReadOnlyExecutor())
     for inc in incidents:
         rem.remediate(inc)
-    log(f"[LIVE] Runbook matches: {len(rem.results)} "
-        f"| pending approval: {len(rem.pending_approval)}")
+    log(f"[LIVE] Runbook matches: {len(rem.results)} (dry-run recommendations, "
+        f"nothing executed) | pending approval: {len(rem.pending_approval)}")
 
     kpi = KPIEngine().compute(max(stats["raw_alerts"], 1), incidents)
 
