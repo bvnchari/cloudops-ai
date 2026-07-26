@@ -129,6 +129,12 @@ if st.session_state.data_source == "live" and st.session_state.live_result:
                 f"ServiceNow itself is a system of record, not a metrics store.")
 else:
     result = load()
+    if st.session_state.sn_config:
+        st.warning("**DEMO mode** — showing synthetic data, not your real "
+                  "ServiceNow instance. If you meant to see live data, go to "
+                  "⚙️ Config → Connections → ServiceNow → Data Source and "
+                  "click **🔄 Pull data from ServiceNow** (this resets to demo "
+                  "on every refresh).")
 stats = result["stats"]
 incidents = result["incidents"]
 
@@ -901,6 +907,25 @@ with tab_cfg:
             if not st.session_state.sn_config:
                 st.info("Save a working connection above to enable publishing.")
             else:
+                is_live_data = result.get("mode") == "live"
+                confirm_demo_publish = True  # only overridden below when data is demo
+                if not is_live_data:
+                    st.error(
+                        f"⚠️ **You are currently viewing DEMO/synthetic data**, not "
+                        f"live ServiceNow data — this happens automatically after "
+                        f"every refresh (the mode resets to demo unless you re-pull "
+                        f"live data). Publishing now would create **{len(incidents)} "
+                        f"fake tickets** in your real instance "
+                        f"`{st.session_state.sn_config.instance}`. Go to the Data "
+                        f"Source section below and click **🔄 Pull data from "
+                        f"ServiceNow** first if you meant to publish real incidents.")
+                    confirm_demo_publish = st.checkbox(
+                        "I understand this is demo/synthetic data and want to "
+                        "publish it to the real instance anyway.")
+                else:
+                    st.success(f"🟢 Viewing LIVE data from "
+                              f"`{st.session_state.sn_config.instance}` — safe to publish.")
+
                 c1, c2, c3 = st.columns(3)
                 do_cmdb = c1.checkbox("Sync CMDB", value=True,
                                       help="Idempotent upsert of topology CIs — safe to re-run.")
@@ -911,7 +936,8 @@ with tab_cfg:
                            f"**{len(result['topology'].cis)} CI(s)** to "
                            f"`{st.session_state.sn_config.instance}`.")
 
-                if st.button("🚀 Publish to ServiceNow", type="primary"):
+                if st.button("🚀 Publish to ServiceNow", type="primary",
+                            disabled=not confirm_demo_publish):
                     from core.itsm import ITSMBridge
                     from core.publisher import publish_incidents
                     from core.servicenow import EnterpriseServiceNowConnector
