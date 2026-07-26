@@ -97,6 +97,37 @@ _auto_load_jira_config()
 _auto_load_anthropic_key()
 
 
+def _auto_load_metrics_source_config():
+    if st.session_state.get("metrics_source_config"):
+        return
+    try:
+        if not hasattr(st, "secrets"):
+            return
+        cfg = dict(st.secrets.get("metrics_source", {}))
+        provider = cfg.get("provider", "")
+        if not provider:
+            return
+        from core import metrics_sources as ms
+        if provider == "prometheus":
+            src = ms.PrometheusSource(base_url=cfg["base_url"], bearer_token=cfg.get("bearer_token", ""))
+        elif provider == "datadog":
+            src = ms.DatadogSource(api_key=cfg["api_key"], app_key=cfg["app_key"],
+                                   site=cfg.get("site", "datadoghq.com"))
+        elif provider == "dynatrace":
+            src = ms.DynatraceSource(base_url=cfg["base_url"], api_token=cfg["api_token"])
+        elif provider == "grafana":
+            src = ms.GrafanaSource(base_url=cfg["base_url"], api_key=cfg["api_key"],
+                                   datasource_uid=cfg["datasource_uid"])
+        else:
+            return
+        src.test_connection()
+        st.session_state.metrics_source_config = dict(cfg)
+    except Exception:
+        pass  # fall back to manual Config tab entry — never block startup
+
+_auto_load_metrics_source_config()
+
+
 def _build_metrics_source():
     cfg = st.session_state.get("metrics_source_config")
     if not cfg:
