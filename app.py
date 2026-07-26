@@ -35,6 +35,7 @@ st.session_state.setdefault("jira_issues", [])        # JiraIssue objects filed 
 st.session_state.setdefault("change_requests", {})     # change_id -> ChangeRequest
 st.session_state.setdefault("k8s_executor_config", None)  # dict of KubernetesExecutor kwargs, or None (read-only)
 st.session_state.setdefault("cluster_inventory_records", None)  # list[dict] uploaded cluster/namespace rows
+st.session_state.setdefault("metrics_source_config", None)  # dict describing active Prometheus/Datadog/Dynatrace/Grafana source
 st.session_state.setdefault("data_source", "demo")     # demo | live
 st.session_state.setdefault("anthropic_key", "")
 st.session_state.setdefault("live_result", None)
@@ -95,12 +96,37 @@ _auto_load_sn_config()
 _auto_load_jira_config()
 _auto_load_anthropic_key()
 
+
+def _build_metrics_source():
+    cfg = st.session_state.get("metrics_source_config")
+    if not cfg:
+        return None
+    from core import metrics_sources as ms
+    provider = cfg["provider"]
+    if provider == "prometheus":
+        return ms.PrometheusSource(base_url=cfg["base_url"], bearer_token=cfg.get("bearer_token", ""))
+    if provider == "datadog":
+        return ms.DatadogSource(api_key=cfg["api_key"], app_key=cfg["app_key"], site=cfg.get("site", "datadoghq.com"))
+    if provider == "dynatrace":
+        return ms.DynatraceSource(base_url=cfg["base_url"], api_token=cfg["api_token"])
+    if provider == "grafana":
+        return ms.GrafanaSource(base_url=cfg["base_url"], api_key=cfg["api_key"],
+                                datasource_uid=cfg["datasource_uid"])
+    return None
+
 if st.session_state.data_source == "live" and st.session_state.live_result:
     result = st.session_state.live_result
-    st.info(f"**LIVE mode** — topology and alerts sourced from ServiceNow "
-            f"(`{result.get('alert_source', 'n/a')}`). Telemetry and anomaly "
-            f"detection are unavailable in this mode: ServiceNow is a system of "
-            f"record, not a metrics store.")
+    if result.get("series"):
+        st.info(f"**LIVE mode** — topology and alerts sourced from ServiceNow "
+                f"(`{result.get('alert_source', 'n/a')}`). Telemetry and anomaly "
+                f"detection are running on real metrics from a configured "
+                f"metrics source ({len(result['series'])} series).")
+    else:
+        st.info(f"**LIVE mode** — topology and alerts sourced from ServiceNow "
+                f"(`{result.get('alert_source', 'n/a')}`). Telemetry and anomaly "
+                f"detection are unavailable until a metrics source (Prometheus/"
+                f"Datadog/Dynatrace/Grafana) is configured in ⚙️ Config — "
+                f"ServiceNow itself is a system of record, not a metrics store.")
 else:
     result = load()
 stats = result["stats"]
@@ -177,8 +203,10 @@ with tab_metrics:
                "app uses; nothing here is separately mocked.")
     if not result.get("series"):
         st.warning("No metric time-series in LIVE mode. ServiceNow stores events "
-                   "and CIs, not raw metrics — connect Prometheus/Datadog for this "
-                   "tab, or switch back to demo mode in ⚙️ Config.")
+                   "and CIs, not raw metrics — connect a real metrics backend in "
+                   "**⚙️ Config → Infrastructure & Execution → 📈 Metrics Source** "
+                   "(Prometheus, Datadog, Dynatrace, or Grafana) and re-pull, or "
+                   "switch back to demo mode in ⚙️ Config.")
     else:
         keys = sorted(result["series"].keys())
         key_labels = {f"{ci} · {m}": (ci, m) for ci, m in keys}
@@ -769,13 +797,16 @@ with tab_cfg:
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(5),
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(5) p { color: #8A6D3B !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(6),
-    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(6) p { color: #117A65 !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(6) p { color: #B8471E !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(7),
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"]:nth-of-type(7) p { color: #117A65 !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(1) { border-bottom-color: #2C5F8A !important; background-color: rgba(44,95,138,0.08) !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(2) { border-bottom-color: #D2691E !important; background-color: rgba(210,105,30,0.08) !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(3) { border-bottom-color: #1A73E8 !important; background-color: rgba(26,115,232,0.08) !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(4) { border-bottom-color: #6264A7 !important; background-color: rgba(98,100,167,0.08) !important; }
     [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(5) { border-bottom-color: #8A6D3B !important; background-color: rgba(138,109,59,0.08) !important; }
-    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(6) { border-bottom-color: #117A65 !important; background-color: rgba(17,122,101,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(6) { border-bottom-color: #B8471E !important; background-color: rgba(184,71,30,0.08) !important; }
+    [class*="st-key-cfg_infra_subtabs"] [data-baseweb="tab-list"] [data-baseweb="tab"][aria-selected="true"]:nth-of-type(7) { border-bottom-color: #117A65 !important; background-color: rgba(17,122,101,0.08) !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -923,7 +954,8 @@ with tab_cfg:
                                         EnterpriseServiceNowConnector(st.session_state.sn_config),
                                         verbose=False,
                                         api_key=st.session_state.anthropic_key or None,
-                                        executor=live_exec)
+                                        executor=live_exec,
+                                        metrics_source=_build_metrics_source())
                                     st.session_state.live_result = refreshed
                                 except Exception:
                                     pass  # publish already succeeded; a stale pull just means click again
@@ -977,7 +1009,8 @@ with tab_cfg:
                                 live = run_pipeline_live(
                                     conn, verbose=False,
                                     api_key=st.session_state.anthropic_key or None,
-                                    executor=_build_live_executor())
+                                    executor=_build_live_executor(),
+                                    metrics_source=_build_metrics_source())
                                 st.session_state.live_result = live
                                 st.session_state.data_source = "live"
                                 if not live["incidents"]:
@@ -1176,8 +1209,9 @@ with tab_cfg:
 
     with infra_group:
         with st.container(key="cfg_infra_subtabs"):
-            k8s_tab, aws_tab, gcp_tab, azure_tab, onprem_tab, inv_tab = st.tabs(
-                ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "🏠 On-Premises", "📋 Cluster Inventory"])
+            k8s_tab, aws_tab, gcp_tab, azure_tab, onprem_tab, metrics_tab, inv_tab = st.tabs(
+                ["☸️ Kubernetes", "🟠 AWS", "🔵 GCP", "🔷 Azure", "🏠 On-Premises",
+                 "📈 Metrics Source", "📋 Cluster Inventory"])
 
         with k8s_tab:
             st.subheader("Real Kubernetes Executor (optional — EXECUTES real commands)")
@@ -1446,6 +1480,115 @@ with tab_cfg:
                     st.error("kubectl not found on this host.")
                 except Exception as e:
                     st.error(f"Test failed: {e}")
+
+        with metrics_tab:
+            st.subheader("Metrics Source (closes the LIVE-mode Telemetry gap)")
+            st.caption("ServiceNow has no metric time-series — this is what "
+                       "actually populates the 📈 Telemetry tab and real "
+                       "anomaly detection in LIVE mode. Pick one backend, "
+                       "Save & Test, and every future 'Pull data from "
+                       "ServiceNow' will fetch real series for each CMDB CI "
+                       "and run the same anomaly detector demo mode uses.")
+
+            prom_sub, dd_sub, dt_sub, graf_sub = st.tabs(
+                ["Prometheus", "Datadog", "Dynatrace", "Grafana"])
+
+            active = st.session_state.get("metrics_source_config")
+            if active:
+                st.success(f"Active source: **{active['provider']}**")
+                if st.button("Disable metrics source (back to no telemetry in LIVE mode)"):
+                    st.session_state.metrics_source_config = None
+                    st.rerun()
+
+            with prom_sub:
+                with st.form("prom_metrics_form"):
+                    prom_url = st.text_input("Prometheus base URL",
+                                             placeholder="http://prometheus.internal:9090")
+                    prom_token = st.text_input("Bearer token (optional)", type="password")
+                    prom_submit = st.form_submit_button("💾 Save & Test Prometheus", type="primary")
+                if prom_submit:
+                    from core.metrics_sources import PrometheusSource
+                    src = PrometheusSource(base_url=prom_url.strip(), bearer_token=prom_token)
+                    try:
+                        info = src.test_connection()
+                        st.session_state.metrics_source_config = {
+                            "provider": "prometheus", "base_url": prom_url.strip(),
+                            "bearer_token": prom_token}
+                        st.success(f"Connected — {info}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Connection failed: {e}")
+
+            with dd_sub:
+                with st.form("dd_metrics_form"):
+                    dd_api = st.text_input("Datadog API key", type="password")
+                    dd_app = st.text_input("Datadog Application key", type="password")
+                    dd_site = st.text_input("Site", value="datadoghq.com",
+                                            help="datadoghq.com (US1), datadoghq.eu (EU), etc.")
+                    dd_submit = st.form_submit_button("💾 Save & Test Datadog", type="primary")
+                if dd_submit:
+                    from core.metrics_sources import DatadogSource
+                    src = DatadogSource(api_key=dd_api, app_key=dd_app, site=dd_site.strip())
+                    try:
+                        info = src.test_connection()
+                        st.session_state.metrics_source_config = {
+                            "provider": "datadog", "api_key": dd_api, "app_key": dd_app,
+                            "site": dd_site.strip()}
+                        st.success(f"Connected — {info}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Connection failed: {e}")
+
+            with dt_sub:
+                with st.form("dt_metrics_form"):
+                    dt_url = st.text_input("Dynatrace environment URL",
+                                           placeholder="https://abc12345.live.dynatrace.com")
+                    dt_token = st.text_input("API token", type="password")
+                    dt_submit = st.form_submit_button("💾 Save & Test Dynatrace", type="primary")
+                if dt_submit:
+                    from core.metrics_sources import DynatraceSource
+                    src = DynatraceSource(base_url=dt_url.strip(), api_token=dt_token)
+                    try:
+                        info = src.test_connection()
+                        st.session_state.metrics_source_config = {
+                            "provider": "dynatrace", "base_url": dt_url.strip(),
+                            "api_token": dt_token}
+                        st.success(f"Connected — {info}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Connection failed: {e}")
+
+            with graf_sub:
+                st.caption("Proxies PromQL through a Grafana-managed Prometheus "
+                          "datasource — useful when Grafana is reachable but "
+                          "Prometheus itself isn't.")
+                with st.form("graf_metrics_form"):
+                    graf_url = st.text_input("Grafana base URL",
+                                             placeholder="https://grafana.internal")
+                    graf_key = st.text_input("API key / service account token", type="password")
+                    graf_ds_uid = st.text_input("Prometheus datasource UID",
+                                                help="Found in Grafana under Connections -> Data sources")
+                    graf_submit = st.form_submit_button("💾 Save & Test Grafana", type="primary")
+                if graf_submit:
+                    from core.metrics_sources import GrafanaSource
+                    src = GrafanaSource(base_url=graf_url.strip(), api_key=graf_key,
+                                        datasource_uid=graf_ds_uid.strip())
+                    try:
+                        info = src.test_connection()
+                        st.session_state.metrics_source_config = {
+                            "provider": "grafana", "base_url": graf_url.strip(),
+                            "api_key": graf_key, "datasource_uid": graf_ds_uid.strip()}
+                        st.success(f"Connected — {info}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Connection failed: {e}")
+
+            with st.expander("Query templates (advanced — edit if your label schema differs)"):
+                from core.metrics_sources import DEFAULT_PROMQL_TEMPLATES
+                st.caption("One query template per metric, with `{ci}` substituted "
+                          "for each CMDB CI's name at fetch time. Defaults assume "
+                          "node_exporter + generic app instrumentation conventions.")
+                st.json(st.session_state.get("metric_query_templates", DEFAULT_PROMQL_TEMPLATES))
 
         with inv_tab:
             st.markdown("#### Cluster/Namespace Inventory (multi-cluster resolution)")

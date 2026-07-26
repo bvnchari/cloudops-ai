@@ -144,17 +144,19 @@ if __name__ == "__main__":
 
 
 def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = None,
-                      executor=None):
+                      executor=None, metrics_source=None, metric_query_templates=None):
     """
     LIVE mode — sources topology and alerts FROM ServiceNow instead of
     synthetic telemetry, then runs the same correlation / remediation /
     AI-analysis engines on that real data.
 
     Honest scope: ServiceNow is a system of record, not a metrics store, so
-    the telemetry ingestion (Phase 1) and anomaly detection (Phase 3) stages
-    have no input in this mode and are skipped rather than faked. Everything
-    downstream — correlation, RCA, remediation matching, KPIs, AI briefs —
-    runs on real data.
+    by default the telemetry ingestion (Phase 1) and anomaly detection
+    (Phase 3) stages have no input in this mode and are skipped rather than
+    faked. Pass `metrics_source` (a core.metrics_sources.MetricsSource —
+    Prometheus/Datadog/Dynatrace/Grafana) to close that gap: real series
+    are fetched per CI and the same anomaly detector demo mode uses runs on
+    them for real.
 
     `executor`: defaults to the safe ReadOnlyExecutor (dry-run only). Pass a
     real Executor (e.g. core.k8s_executor.KubernetesExecutor) to actually
@@ -183,6 +185,24 @@ def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = Non
     log(f"[LIVE] {stats['raw_alerts']} alerts -> {stats['incidents']} incidents "
         f"({stats['noise_reduction_pct']}% noise reduction)")
 
+    live_series, live_signals = {}, []
+    if metrics_source is not None:
+        from core.metrics_sources import fetch_series_for_cis
+        from core.anomaly import AnomalyDetector
+        ci_names = [ci.name for ci in topo.cis.values()]
+        live_series = fetch_series_for_cis(metrics_source, ci_names,
+                                           templates=metric_query_templates)
+        det = AnomalyDetector()
+        for (ci, metric), series in live_series.items():
+            live_signals += det.point_anomalies(series)
+            live_signals += det.level_shifts(series)
+            if metric == "node_disk_utilization":
+                pred = det.predict_breach(series, limit=95.0)
+                if pred:
+                    live_signals.append(pred)
+        log(f"[LIVE] Real metric series fetched: {len(live_series)} (ci, metric) "
+            f"pairs | anomaly signals: {len(live_signals)}")
+
     from core.remediation import ReadOnlyExecutor
     rem = RemediationEngine(executor=executor or ReadOnlyExecutor())
     for inc in incidents:
@@ -201,7 +221,7 @@ def run_pipeline_live(connector, verbose: bool = True, api_key: str | None = Non
     briefs = analyst.analyze_all(incidents)
 
     return {
-        "mode": "live", "series": {}, "raw_alerts": alerts, "signals": [],
+        "mode": "live", "series": live_series, "raw_alerts": alerts, "signals": live_signals,
         "incidents": incidents, "stats": stats, "tickets": [],
         "remediations": rem.results, "kpi": kpi, "topology": topo,
         "briefs": briefs, "alert_source": table,
