@@ -693,13 +693,13 @@ with tab_itsm:
                            file_name="cloudops_itsm_tickets.csv", mime="text/csv",
                            key="itsm_dl_csv")
     with e2:
-        if st.button("📤 Generate ITSM Ticket Summary report", key="itsm_gen_report"):
+        if st.button("📤 Generate Incident Ticket Summary report", key="itsm_gen_report"):
             md = itsm_report_markdown(filtered or tickets, period_label="current window",
                                       sla_hours=SLA_HOURS,
                                       jira_issues=st.session_state.jira_issues)
             st.session_state["rep_markdown"] = md
             st.session_state["rep_markdown_name"] = "CloudOps-AI_ITSM_Ticket_Summary.md"
-            st.session_state["rep_type_choice"] = "ITSM Ticket Summary"
+            st.session_state["rep_type_choice"] = "Incident Ticket Summary"
             st.success("Report built — download it right here, or open "
                        "**📤 Reports & Delivery** where it's already loaded.")
             st.download_button("⬇️ Download Markdown", md,
@@ -1649,10 +1649,17 @@ with tab_exec:
     with st.expander("Adjust SLO targets"):
         target = st.slider("Availability target (%)", 99.0, 99.99, 99.9, 0.01)
         window_days = st.selectbox("Window (days)", [7, 30, 90], index=1)
+        from core.slo import slos_for_incidents
+        is_live = result.get("mode") == "live"
+        has_business_service = any(i.business_service for i in incidents)
+        base_slos = slos_for_incidents(incidents) if is_live else DEFAULT_SLOS
+        if is_live and not has_business_service:
+            st.caption("No business_service set on any live incident yet — "
+                      "falling back to demo SLO names until real data has one.")
         custom_slos = [SLO(name=s.name, business_service=s.business_service,
                            target_pct=target, window_days=window_days,
                            severity_counts=s.severity_counts)
-                       for s in DEFAULT_SLOS]
+                       for s in base_slos]
 
     statuses = SLOEngine(custom_slos).evaluate(incidents)
     for s in statuses:
@@ -1768,7 +1775,7 @@ with tab_slx:
         elif not d.metric:
             sli_results.append(calc.from_incidents(
                 d, incidents, window_h=2.0,
-                business_service="Payments Platform"))
+                business_service=None))  # platform-wide, not one hardcoded service
 
     if not sli_results:
         st.warning("No SLIs computable — metric series unavailable in this mode.")
@@ -1924,7 +1931,7 @@ with tab_reports:
                 sli_results.append(calc.from_series(d, result["series"][(d.ci_id, d.metric)]))
             elif not d.metric:
                 sli_results.append(calc.from_incidents(
-                    d, incidents, window_h=2.0, business_service="Payments Platform"))
+                    d, incidents, window_h=2.0, business_service=None))
 
         availability_sli = next((r for r in sli_results if r.source == "incident_timeline"),
                                 sli_results[0] if sli_results else None)
@@ -1953,7 +1960,7 @@ with tab_reports:
         "Incident Postmortem": "markdown",
         "SLA Compliance": "bundle",
         "Alert Funnel / Noise": "bundle",
-        "ITSM Ticket Summary": "markdown",
+        "Incident Ticket Summary": "markdown",
     }
     report_choice = st.selectbox(
         "Report type", list(REPORT_TYPES.keys()), key="rep_type_choice",
@@ -2040,7 +2047,7 @@ with tab_reports:
                 sla_breach_count=_breach_count_rep)
             st.session_state["rep_markdown_name"] = "CloudOps-AI_Executive_Briefing.md"
 
-    elif report_choice == "ITSM Ticket Summary":
+    elif report_choice == "Incident Ticket Summary":
         _pub = st.session_state.publish_result
         _tickets = _pub.tickets if (_pub and _pub.tickets) else result["tickets"]
         st.caption(f"{len(_tickets)} ticket(s) currently loaded "

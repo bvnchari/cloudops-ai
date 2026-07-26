@@ -17,6 +17,7 @@ system, the objective is a decision about what's good enough. Same SLI can
 back several SLOs (internal target) and an SLA (external commitment).
 """
 
+import time
 from dataclasses import dataclass, field
 
 from .correlation import Incident
@@ -111,7 +112,13 @@ class SLICalculator:
             return SLIResult(definition, total_buckets, total_buckets,
                              window_h, "incident_timeline")
 
-        window_end = max((i.resolved_ts or i.created_ts) for i in relevant)
+        # window_end anchors to "now" only if something is still open — a
+        # currently-open incident's own created_ts is not a meaningful window
+        # end (that previously collapsed start==end and silently hid it).
+        # Fully-resolved incidents keep anchoring to their own timestamps, so
+        # historical/post-hoc analysis of past incidents is unaffected.
+        has_open = any(i.resolved_ts is None for i in relevant)
+        window_end = time.time() if has_open else max(i.resolved_ts for i in relevant)
         window_start = window_end - window_h * 3600
 
         bad = set()

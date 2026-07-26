@@ -143,3 +143,19 @@ DEFAULT_SLOS = [
         business_service="Payments Platform",
         target_pct=99.5, window_days=30, severity_counts=("critical", "warning")),
 ]
+
+
+def slos_for_incidents(incidents, target_pct: float = 99.9, window_days: int = 30,
+                       severity_counts: tuple = ("critical", "warning")) -> list:
+    """Builds one SLO per business service actually present in `incidents`,
+    instead of hardcoding to the demo's 'Payments Platform'. This is what
+    makes the Executive tab reflect real ServiceNow business services in
+    LIVE mode — DEFAULT_SLOS only matches synthetic demo data and silently
+    returns zero contributing incidents against anything else. Falls back
+    to DEFAULT_SLOS if incidents is empty or has no business_service set."""
+    services = sorted({i.business_service for i in incidents if i.business_service})
+    if not services:
+        return list(DEFAULT_SLOS)
+    return [SLO(name=f"{svc} availability", business_service=svc,
+               target_pct=target_pct, window_days=window_days,
+               severity_counts=severity_counts) for svc in services]
