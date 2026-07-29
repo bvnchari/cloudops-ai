@@ -1525,7 +1525,8 @@ with tab_cfg:
             if st.button("🔍 Test this context", key="onprem_test_btn"):
                 import subprocess
                 try:
-                    args = ["kubectl", "cluster-info"]
+                    import shutil
+                    args = [shutil.which("kubectl") or "kubectl", "cluster-info"]
                     if onprem_context.strip():
                         args += ["--context", onprem_context.strip()]
                     proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
@@ -1684,7 +1685,8 @@ with tab_cfg:
                     if st.button("🔍 Validate inventory contexts"):
                         import subprocess
                         try:
-                            proc = subprocess.run(["kubectl", "config", "get-contexts", "-o", "name"],
+                            import shutil
+                            proc = subprocess.run([shutil.which("kubectl") or "kubectl", "config", "get-contexts", "-o", "name"],
                                                   capture_output=True, text=True, timeout=15)
                             known = set((proc.stdout or "").splitlines())
                             missing = [r["match"] for r in inv_records if r["kube_context"] not in known]

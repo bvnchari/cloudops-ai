@@ -32,10 +32,27 @@ fail clearly (not silently) if the binary isn't present.
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
+
+
+def _resolve_cli(name: str) -> str:
+    """Resolve a CLI tool to its real, callable path.
+
+    On Windows, `gcloud` and `az` are `.cmd` batch-file wrappers, not raw
+    `.exe` files. Python's subprocess.run(["gcloud", ...]) with the default
+    shell=False uses the Windows CreateProcess API directly, which does NOT
+    do the PATHEXT-based `.cmd`/`.bat` resolution an interactive shell does
+    — so it raises FileNotFoundError even when `gcloud` genuinely works when
+    typed into PowerShell. shutil.which() performs that same PATHEXT-aware
+    search interactively shells use, so it finds `gcloud.cmd` correctly.
+    Falls back to the bare name if not found, so the original clear
+    "CLI not found" error still fires when the tool is truly absent.
+    """
+    return shutil.which(name) or name
 
 
 @dataclass
@@ -71,13 +88,13 @@ class CloudAccount:
         present AND the credentials are actually valid, without touching
         any cluster."""
         if self.provider == "aws":
-            args = ["aws", "sts", "get-caller-identity"]
+            args = [_resolve_cli("aws"), "sts", "get-caller-identity"]
             if self.aws_region:
                 args += ["--region", self.aws_region]
         elif self.provider == "gcp":
-            args = ["gcloud", "auth", "list", "--format=value(account)"]
+            args = [_resolve_cli("gcloud"), "auth", "list", "--format=value(account)"]
         elif self.provider == "azure":
-            args = ["az", "account", "show"]
+            args = [_resolve_cli("az"), "account", "show"]
         else:
             raise ValueError(f"Unknown provider: {self.provider}")
 
@@ -104,7 +121,7 @@ class CloudAccount:
         env = self._env()
         try:
             if self.provider == "aws":
-                args = ["aws", "eks", "update-kubeconfig",
+                args = [_resolve_cli("aws"), "eks", "update-kubeconfig",
                         "--name", target.cluster_name, "--region", target.region,
                         "--alias", target.kube_context]
                 if target.iam_role_arn:
@@ -118,7 +135,7 @@ class CloudAccount:
                     with os.fdopen(fd, "w") as f:
                         f.write(self.gcp_service_account_key_json)
                     env["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-                args = ["gcloud", "container", "clusters", "get-credentials",
+                args = [_resolve_cli("gcloud"), "container", "clusters", "get-credentials",
                         target.cluster_name, "--region", target.region,
                         "--project", target.account_id or self.gcp_project]
                 if target.service_account:
@@ -132,12 +149,12 @@ class CloudAccount:
             elif self.provider == "azure":
                 if self.azure_client_id and self.azure_client_secret:
                     login = subprocess.run(
-                        ["az", "login", "--service-principal", "-u", self.azure_client_id,
+                        [_resolve_cli("az"), "login", "--service-principal", "-u", self.azure_client_id,
                          "-p", self.azure_client_secret, "--tenant", self.azure_tenant_id],
                         capture_output=True, text=True, timeout=30, env=env)
                     if login.returncode != 0:
                         return False, f"[LOGIN FAILED] az login: {(login.stderr or login.stdout)[:300]}"
-                args = ["az", "aks", "get-credentials",
+                args = [_resolve_cli("az"), "aks", "get-credentials",
                         "--resource-group", target.account_id, "--name", target.cluster_name,
                         "--overwrite-existing", "--context", target.kube_context]
                 proc = subprocess.run(args, capture_output=True, text=True, timeout=30, env=env)
