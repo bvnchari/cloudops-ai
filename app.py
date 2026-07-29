@@ -1525,8 +1525,7 @@ with tab_cfg:
             if st.button("🔍 Test this context", key="onprem_test_btn"):
                 import subprocess
                 try:
-                    import shutil
-                    args = [shutil.which("kubectl") or "kubectl", "cluster-info"]
+                    args = ["kubectl", "cluster-info"]
                     if onprem_context.strip():
                         args += ["--context", onprem_context.strip()]
                     proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
@@ -1670,13 +1669,16 @@ with tab_cfg:
             inv_file = st.file_uploader("Upload cluster inventory (CSV)", type=["csv"],
                                         key="cluster_inv_upload")
             if inv_file is not None:
-                try:
-                    inv = ClusterInventory.from_csv(inv_file.getvalue().decode("utf-8"))
-                    st.session_state.cluster_inventory_records = inv.to_rows()
-                    st.success(f"Loaded {len(inv.targets)} cluster target(s).")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Couldn't parse that CSV: {e}")
+                file_fingerprint = f"{inv_file.name}:{inv_file.size}"
+                if st.session_state.get("_last_processed_inv_file") != file_fingerprint:
+                    try:
+                        inv = ClusterInventory.from_csv(inv_file.getvalue().decode("utf-8"))
+                        st.session_state.cluster_inventory_records = inv.to_rows()
+                        st.session_state._last_processed_inv_file = file_fingerprint
+                        st.success(f"Loaded {len(inv.targets)} cluster target(s).")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Couldn't parse that CSV: {e}")
 
             if inv_records:
                 st.dataframe(pd.DataFrame(inv_records), use_container_width=True, hide_index=True)
@@ -1685,8 +1687,7 @@ with tab_cfg:
                     if st.button("🔍 Validate inventory contexts"):
                         import subprocess
                         try:
-                            import shutil
-                            proc = subprocess.run([shutil.which("kubectl") or "kubectl", "config", "get-contexts", "-o", "name"],
+                            proc = subprocess.run(["kubectl", "config", "get-contexts", "-o", "name"],
                                                   capture_output=True, text=True, timeout=15)
                             known = set((proc.stdout or "").splitlines())
                             missing = [r["match"] for r in inv_records if r["kube_context"] not in known]

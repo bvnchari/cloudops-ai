@@ -27,7 +27,6 @@ Scope, honestly stated:
 
 import re
 import shlex
-import shutil
 import subprocess
 
 from .remediation import Executor, RunbookAction
@@ -59,7 +58,7 @@ class KubernetesExecutor(Executor):
 
     def _base_args(self, context: dict | None = None) -> list[str]:
         context = context or {}
-        args = [shutil.which("kubectl") or "kubectl"]
+        args = ["kubectl"]
         if self.kubeconfig_path:
             args += ["--kubeconfig", self.kubeconfig_path]
         kube_context = context.get("kube_context") or self.context
