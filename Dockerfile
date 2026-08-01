@@ -20,7 +20,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py .
 COPY pipeline.py .
 COPY core/ ./core/
-COPY .streamlit/ ./.streamlit/
 
 EXPOSE 8501
 
