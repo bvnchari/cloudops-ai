@@ -1,0 +1,15 @@
+.git
+.gitignore
+.pytest_cache
+__pycache__
+*.pyc
+venv/
+.venv/
+*.zip
+*.docx
+tests/
+.agents/
+README.md
+DEPLOY.md
+SERVICENOW_SETUP.md
+GCP_GKE_Demo_Runbook.md
